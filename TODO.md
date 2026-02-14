@@ -7,23 +7,25 @@
 - [x] Créer config.h avec les définitions de base
 - [x] Créer CLAUDE.md
 - [x] Créer ce TODO.md
-- [ ] Ajouter le document de spécifications dans /docs/
-- [ ] Premier commit
+- [x] Ajouter le document de spécifications dans /docs/
+- [x] config.h mis à jour avec 27 GPIO (specs Rev P4)
+- [x] Premier commit + push GitHub
 
-## Étape 1 : Blink LED
-**Branche : `feature/blink`**
-- [ ] Créer la branche feature/blink
-- [ ] Écrire main.cpp avec clignotement LED (millis(), pas delay())
-- [ ] Ajouter messages Serial de debug
-- [ ] Compiler sans erreur (pio run)
-- [ ] **Validation hardware** : LED clignote + messages Serial visibles
+## Étape 1 : Blink LED ✓
+**Branche : `feature/blink` → mergée dans main**
+- [x] Créer la branche feature/blink
+- [x] Écrire main.cpp avec clignotement LED NeoPixel (millis())
+- [x] Ajouter messages Serial USB CDC de debug
+- [x] Compiler sans erreur (pio run)
+- [x] Script auto-reset upload pour ProS3 USB CDC
+- [x] **Validation hardware** : LED clignote vert + Serial OK
 
-## Étape 2 : Protocole EasyCom (série)
-**Branche : `feature/easycom`**
-- [ ] Créer easycom.h et easycom.cpp
-- [ ] Implémenter parsing des commandes (AZ, EL, AZ EL)
-- [ ] Implémenter les réponses
-- [ ] Intégrer dans main.cpp (boucle EasyCom)
+## Étape 2 : Protocole GS-232 (série)
+**Branche : `feature/gs232`**
+- [ ] Créer gs232.h et gs232.cpp
+- [ ] Implémenter parsing des commandes (C2, Mxxx, Wxxx yyy, S, R, L, U, D)
+- [ ] Implémenter les réponses (format +0xxx+0yyy)
+- [ ] Intégrer dans main.cpp (boucle GS-232 sur Serial)
 - [ ] Tester avec valeurs simulées
 - [ ] **Validation hardware** : commandes série fonctionnelles
 
