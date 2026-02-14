@@ -73,6 +73,11 @@
 #define I2C_ADDR_OLED       0x3F
 #define I2C_SPEED           400000  // 400 kHz Fast Mode
 
+// ═══════ Protocole rotator ═══════
+// Décommenter UN SEUL des deux :
+#define PROTOCOL_GS232      // Yaesu GS-232B (PSTRotator, N1MM, etc.)
+// #define PROTOCOL_EASYCOM    // EasyCom II (HRD, certains logiciels)
+
 // ═══════ TCP Ports ═══════
 #define GS232_TCP_PORT      4533    // PSTRotator GS-232
 #define APP_TCP_PORT        4534    // Application Windows (JSON)
