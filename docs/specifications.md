@@ -71,7 +71,7 @@ Arduino Nano R4 as monitoring/telemetry slave.
 ### 2.5 Manual Buttons — 4× (CW, CCW, UP, DOWN)
 - Type: Momentary pushbutton, active LOW
 - Interface: MCP23017 port A pins PA4-PA7 with internal pull-ups
-- Pressing a button → MCP23017 interrupt → GPIO 33 → ESP32 ISR
+- Pressing a button → MCP23017 interrupt → GPIO 16 → ESP32 ISR
 
 ### 2.6 Emergency Stop — 1× NF (normally closed) button
 - **HARDWARE safety**: Wired in series with MC33926 EN pin
@@ -83,7 +83,7 @@ Arduino Nano R4 as monitoring/telemetry slave.
 ### 2.7 I/O Expander — MCP23017 (I2C, address 0x20)
 - Port A (PA0-PA7): 4 limit switches + 4 manual buttons (all inputs)
 - Port B (PB0-PB7): 8 GPIO reserve (LEDs, relays, future expansion)
-- Interrupt: INTA/INTB mirrored, open-drain, connected to GPIO 33
+- Interrupt: INTA/INTB mirrored, open-drain, connected to GPIO 16
 
 ### 2.8 Ethernet — W5500 module (SPI)
 - Integrated TCP/IP stack (offloads ESP32)
@@ -146,11 +146,13 @@ ESP-IDF headers available directly from Arduino framework:
 
 | GPIO | Internal Function | Status |
 |------|-------------------|--------|
-| IO15, IO16 | 32 kHz crystal (XTAL_32K_P/N) | FORBIDDEN |
+| IO10 | BATTERY VOLTAGE (VBAT sense via divider) | FORBIDDEN — not on headers |
+| IO11 | Not routed to headers | FORBIDDEN — not accessible |
 | IO17 | LDO2 Enable (controls 2nd 3.3V regulator + RGB LED power) | FORBIDDEN |
 | IO18 | RGB LED WS2812B (DI) | FORBIDDEN |
 | IO19, IO20 | USB D−/D+ (USB-C connector) | FORBIDDEN |
 | IO26–IO32 | Internal SPI Flash + PSRAM | FORBIDDEN |
+| IO33 | DETECT 5V PRESENT (VBUS sense) | FORBIDDEN — not on headers |
 | IO45, IO46 | Strapping pins (not on headers) | FORBIDDEN |
 
 ### 4.2 GPIOs with internal connections (usable with conditions)
@@ -158,8 +160,8 @@ ESP-IDF headers available directly from Arduino framework:
 | GPIO | Internal Connection | Usage Condition |
 |------|---------------------|-----------------|
 | IO0 | Strapping pin (boot mode) | Usable after boot. HIGH at boot = normal SPI Flash boot. |
-| IO10 | VBUS sense via R15 (2kΩ to 5V USB) | DANGEROUS if USB connected. NOT USED. |
-| IO33 | VBAT sense via R14 (3.3kΩ) | OK if no LiPo battery. Used for MCP23017 INT. |
+| IO15 | XTAL_32K_P (32 kHz crystal pad, NOT populated) | Available on header. Safe for general use. |
+| IO16 | XTAL_32K_N (32 kHz crystal pad, NOT populated) | Available on header. Safe for general use. |
 
 ### 4.3 Fixed I2C (STEMMA Qwiic connector)
 ```cpp
@@ -199,7 +201,7 @@ is freed and available. These pins are used for UART1 (RS-485) via the ESP32-S3 
 #define PIN_I2C_SCL         9    // IO9  — STEMMA Qwiic SCL (not remappable)
 
 // ═══════ SPI3 — W5500 Ethernet ═══════
-#define PIN_W5500_CS        11   // IO11 — Chip Select W5500
+#define PIN_W5500_CS        15   // IO15 — Chip Select W5500
 #define PIN_W5500_SCLK      12   // IO12 — SPI3 Clock
 #define PIN_W5500_MISO      13   // IO13 — SPI3 MISO
 #define PIN_W5500_MOSI      14   // IO14 — SPI3 MOSI
@@ -211,9 +213,9 @@ is freed and available. These pins are used for UART1 (RS-485) via the ESP32-S3 
 #define PIN_MOT_EL_PWM      38   // IO38 — MCPWM timer 1, operator A
 
 // ═══════ MCP23017 — Interrupt (limit switches + buttons) ═══════
-#define PIN_MCP_INT         33   // IO33 — Input, interrupt
-                                 //        Note: R14 (3.3kΩ) to VBAT internally.
-                                 //        OK because no LiPo in this application.
+#define PIN_MCP_INT         16   // IO16 — Input, interrupt
+                                 //        Note: 32 kHz crystal not populated on ProS3,
+                                 //        pin is available on header.
 
 // ═══════ SPI2 — HH-12 encoders (via TXS0108E) ═══════
 #define PIN_HH12_CS_EL      34   // IO34 — SPI2 CS elevation
@@ -236,7 +238,9 @@ is freed and available. These pins are used for UART1 (RS-485) via the ESP32-S3 
 #define PIN_RS485_RX        44   // IO44 — UART1 RX ← MAX485 RO [ex-U0RXD]
 
 // ═══════ Unused pins ═══════
-// IO10 — VBUS sense (R15 2kΩ to USB 5V). DANGEROUS, do not use.
+// IO10 — BATTERY VOLTAGE (VBAT sense). Not on headers.
+// IO11 — Not routed to headers. Not accessible.
+// IO33 — DETECT 5V PRESENT (VBUS sense). Not on headers.
 // IO18 — RGB LED WS2812B of ProS3. Could be used as diagnostic LED
 //         but WS2812B will interpret the signals.
 ```
@@ -255,12 +259,12 @@ is freed and available. These pins are used for UART1 (RS-485) via the ESP32-S3 
 | 8 | IO7 | GPIO In (INT) | STOP button NF (fail-safe, interrupt) |
 | 9 | IO8 | I2C SDA | Qwiic: EEPROM (0x50) + MCP23017 (0x20) + OLED (0x3F) |
 | 10 | IO9 | I2C SCL | Qwiic: I2C bus 400 kHz |
-| 11 | IO11 | SPI3 CS | W5500 Ethernet Chip Select |
+| 11 | IO15 | SPI3 CS | W5500 Ethernet Chip Select |
 | 12 | IO12 | SPI3 SCLK | W5500 Ethernet Clock |
 | 13 | IO13 | SPI3 MISO | W5500 Ethernet Data In |
 | 14 | IO14 | SPI3 MOSI | W5500 Ethernet Data Out |
 | 15 | IO21 | MCPWM T0 | PWM motor AZ (MC33926 M1_D2) |
-| 16 | IO33 | GPIO In (INT) | MCP23017 INTA (limit switches + buttons) |
+| 16 | IO16 | GPIO In (INT) | MCP23017 INTA (limit switches + buttons) |
 | 17 | IO34 | SPI2 CS | HH-12 Elevation Chip Select |
 | 18 | IO35 | SPI2 CS | HH-12 Azimuth Chip Select |
 | 19 | IO36 | SPI2 SCLK | HH-12 Clock (via TXS0108E) |
@@ -306,7 +310,7 @@ is freed and available. These pins are used for UART1 (RS-485) via the ESP32-S3 
 //   GPPUA    = 0xF0 (pull-up on PA4–PA7 buttons only, PA0–PA3 via optocouplers)
 //   GPINTENA = 0xFF (interrupt on all port A pins)
 //   INTCONA  = 0x00 (interrupt on change)
-//   IOCON.MIRROR = 1 (INTA = INTB, single wire to GPIO 33)
+//   IOCON.MIRROR = 1 (INTA = INTB, single wire to GPIO 16)
 //   IOCON.ODR = 1 (open drain, external pull-up to 3.3V)
 ```
 
@@ -641,7 +645,7 @@ typedef enum {
 | task_modbus | 0 | 4 | 1000 ms | Modbus polling Nano R4 |
 | task_oled | 0 | 2 | 500 ms | OLED display update |
 | ISR stop_btn | 1 | ISR | Event | STOP button interrupt (GPIO 7) |
-| ISR mcp_int | 1 | ISR | Event | MCP23017 interrupt (GPIO 33) |
+| ISR mcp_int | 1 | ISR | Event | MCP23017 interrupt (GPIO 16) |
 
 All Core 1 tasks (real-time) have higher priority than Core 0 tasks (communication).
 ISRs must be short (set flag + xTaskNotify, no I2C in ISR).
@@ -658,7 +662,7 @@ ISRs must be short (set flag + xTaskNotify, no I2C in ISR).
 //   // Software saves position and notifies
 
 // ─── Rule 2: Limit switches (SOFTWARE ONLY) ───
-// ISR IO33 (PIN_MCP_INT, MCP23017 INT):
+// ISR IO16 (PIN_MCP_INT, MCP23017 INT):
 //   mcp_flag = true
 //   xTaskNotifyGive(task_pid_loop)
 //
