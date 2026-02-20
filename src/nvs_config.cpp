@@ -23,6 +23,23 @@ void cfgResetDefaults() {
     cfg.motRampDeg  = MOT_RAMP_DEG;
     cfg.motDeadband = MOT_DEADBAND_DEG;
 
+    // Limites mécaniques
+    cfg.azMin = AZ_MIN;
+    cfg.azMax = AZ_MAX;
+    cfg.elMin = EL_MIN;
+    cfg.elMax = EL_MAX;
+
+    // Offset élévation
+    cfg.elOffsetActive = false;
+    cfg.elOffset       = 0.0f;
+
+    // Position maintenance
+    cfg.maintAz = 180.0f;
+    cfg.maintEl = 0.0f;
+
+    // Debug série
+    cfg.debugSerial = (bool)DEBUG;
+
     // Modules — défauts = ce qui est activé à la compilation
     cfg.oledActive     = (bool)ENABLE_OLED;
     cfg.ethernetActive = (bool)ENABLE_ETHERNET;
@@ -77,6 +94,19 @@ void cfgInit() {
 
             cfg.azEncoder = (AzEncoderType)prefs.getUChar("azEnc",  (uint8_t)cfg.azEncoder);
             cfg.elSensor  = (ElSensorType) prefs.getUChar("elSens", (uint8_t)cfg.elSensor);
+
+            cfg.azMin = prefs.getFloat("azMin", cfg.azMin);
+            cfg.azMax = prefs.getFloat("azMax", cfg.azMax);
+            cfg.elMin = prefs.getFloat("elMin", cfg.elMin);
+            cfg.elMax = prefs.getFloat("elMax", cfg.elMax);
+
+            cfg.elOffsetActive = prefs.getBool("elOffAct", cfg.elOffsetActive);
+            cfg.elOffset       = prefs.getFloat("elOffset", cfg.elOffset);
+
+            cfg.maintAz = prefs.getFloat("maintAz", cfg.maintAz);
+            cfg.maintEl = prefs.getFloat("maintEl", cfg.maintEl);
+
+            cfg.debugSerial = prefs.getBool("debug", cfg.debugSerial);
 
             DEBUG_PRINTLN("[CFG] Config chargée depuis NVS");
         } else {
@@ -133,6 +163,14 @@ void cfgInit() {
     if (cfg.motRampDeg < 1.0f)   cfg.motRampDeg = 1.0f;
     if (cfg.motDeadband < 0.1f)  cfg.motDeadband = 0.1f;
 
+    // Clamp limites mécaniques
+    if (cfg.azMin < -180.0f) cfg.azMin = -180.0f;
+    if (cfg.azMax > 540.0f)  cfg.azMax = 540.0f;
+    if (cfg.azMin >= cfg.azMax) { cfg.azMin = 0.0f; cfg.azMax = 360.0f; }
+    if (cfg.elMin < -90.0f)  cfg.elMin = -90.0f;
+    if (cfg.elMax > 180.0f)  cfg.elMax = 180.0f;
+    if (cfg.elMin >= cfg.elMax) { cfg.elMin = 0.0f; cfg.elMax = 90.0f; }
+
     // ── Log résumé ──
     DEBUG_PRINTLN("[CFG] ── Config active ──");
     DEBUG_PRINT("  Moteur: max="); DEBUG_PRINT(String(cfg.motMaxDuty, 0));
@@ -140,6 +178,20 @@ void cfgInit() {
     DEBUG_PRINT("% rampe=");       DEBUG_PRINT(String(cfg.motRampDeg, 0));
     DEBUG_PRINT("° dead=");        DEBUG_PRINT(String(cfg.motDeadband, 1));
     DEBUG_PRINTLN("°");
+
+    DEBUG_PRINT("  Limites: AZ["); DEBUG_PRINT(String(cfg.azMin, 0));
+    DEBUG_PRINT(","); DEBUG_PRINT(String(cfg.azMax, 0));
+    DEBUG_PRINT("] EL["); DEBUG_PRINT(String(cfg.elMin, 0));
+    DEBUG_PRINT(","); DEBUG_PRINT(String(cfg.elMax, 0));
+    DEBUG_PRINTLN("]");
+
+    if (cfg.elOffsetActive) {
+        DEBUG_PRINT("  EL offset: "); DEBUG_PRINT(String(cfg.elOffset, 1));
+        DEBUG_PRINTLN("°");
+    }
+
+    DEBUG_PRINT("  Maint: AZ="); DEBUG_PRINT(String(cfg.maintAz, 1));
+    DEBUG_PRINT(" EL="); DEBUG_PRINTLN(String(cfg.maintEl, 1));
 
     const char *azNames[] = {"SIM", "HH-12", "AS5048A"};
     const char *elNames[] = {"SIM", "HH-12", "WitMotion", "AS5048A"};
@@ -150,7 +202,8 @@ void cfgInit() {
     DEBUG_PRINT(" ETH=");       DEBUG_PRINT(cfg.ethernetActive);
     DEBUG_PRINT(" GPS=");       DEBUG_PRINT(cfg.gpsActive);
     DEBUG_PRINT(" MCP=");       DEBUG_PRINT(cfg.mcp23017Active);
-    DEBUG_PRINT(" NanoR4=");    DEBUG_PRINTLN(cfg.nanoR4Active);
+    DEBUG_PRINT(" NanoR4=");    DEBUG_PRINT(cfg.nanoR4Active);
+    DEBUG_PRINT(" Debug=");     DEBUG_PRINTLN(cfg.debugSerial);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -177,6 +230,19 @@ void cfgSave() {
 
     prefs.putUChar("azEnc",  (uint8_t)cfg.azEncoder);
     prefs.putUChar("elSens", (uint8_t)cfg.elSensor);
+
+    prefs.putFloat("azMin",    cfg.azMin);
+    prefs.putFloat("azMax",    cfg.azMax);
+    prefs.putFloat("elMin",    cfg.elMin);
+    prefs.putFloat("elMax",    cfg.elMax);
+
+    prefs.putBool("elOffAct",  cfg.elOffsetActive);
+    prefs.putFloat("elOffset", cfg.elOffset);
+
+    prefs.putFloat("maintAz",  cfg.maintAz);
+    prefs.putFloat("maintEl",  cfg.maintEl);
+
+    prefs.putBool("debug",     cfg.debugSerial);
 
     prefs.end();
     DEBUG_PRINTLN("[CFG] Sauvegardé dans NVS");

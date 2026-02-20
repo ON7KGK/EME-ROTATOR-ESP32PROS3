@@ -2,11 +2,13 @@
 #define CONFIG_H
 
 // === Debug ===
-// Mettre à 0 pour désactiver les messages debug sur Serial USB
+// Mettre à 0 pour éliminer tout code debug à la compilation
+// Si DEBUG=1, le flag runtime g_debugSerial contrôle l'activation
 #define DEBUG 1
+extern bool g_debugSerial;
 #if DEBUG
-  #define DEBUG_PRINT(x)   Serial.print(x)
-  #define DEBUG_PRINTLN(x) Serial.println(x)
+  #define DEBUG_PRINT(x)   do { if (g_debugSerial) Serial.print(x); } while(0)
+  #define DEBUG_PRINTLN(x) do { if (g_debugSerial) Serial.println(x); } while(0)
 #else
   #define DEBUG_PRINT(x)
   #define DEBUG_PRINTLN(x)
@@ -41,7 +43,7 @@
 
 // ── RS-485 / MODBUS ──
 #define ENABLE_RS485          1   // RS-485 Modbus master (UART1) — ✅ TEST
-#define ENABLE_NANO_R4        0   // Nano R4 télémétrie (addr 1)
+#define ENABLE_NANO_R4        1   // Nano R4 télémétrie (addr 1) — ✅ ACTIF
 #define ENABLE_HWT901B_BUS    0   // HWT901B sur bus Modbus (addr 2)
 
 // ── GPS ──

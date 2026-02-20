@@ -1,6 +1,7 @@
 """
-Elevation Widget — Jauge arc 0-90 degres pour l'elevation.
+Elevation Widget — Jauge arc -30 a 90 degres pour l'elevation.
 Arc vert = position courante, marqueur rouge = cible.
+Echelle etendue pour mode maintenance (angles negatifs).
 """
 
 import math
@@ -10,14 +11,14 @@ from PySide6.QtGui import QPainter, QPen, QColor, QFont, QBrush
 
 
 class ElevationWidget(QWidget):
-    """Jauge en arc pour l'affichage elevation 0-90 degres."""
+    """Jauge en arc pour l'affichage elevation -30 a 90 degres."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._el = 0.0
         self._target_el = 0.0
         self._moving = False
-        self.setMinimumSize(200, 140)
+        self.setMinimumSize(200, 180)
 
     def setElevation(self, el: float):
         self._el = el
@@ -37,23 +38,32 @@ class ElevationWidget(QWidget):
 
         w = self.width()
         h = self.height()
-        cx = w / 2
-        cy = h - 20  # Centre en bas
-        radius = min(w / 2 - 20, h - 40)
 
-        # Arc de fond (0 a 90 degres)
+        # Centre de l'arc — decale pour accueillir -30° sous l'horizontale
+        # Au-dessus du centre : radius (pour 90°)
+        # En dessous du centre : radius * sin(30°) = 0.5 * radius
+        margin_top = 25
+        margin_bottom = 30
+        radius = min(w / 2 - 25, (h - margin_top - margin_bottom) / 1.5)
+        cx = w / 2
+        cy = margin_top + radius
+
+        # Arc de fond (-30 a 90 degres)
         arc_rect = QRectF(cx - radius, cy - radius, radius * 2, radius * 2)
         painter.setPen(QPen(QColor(80, 80, 80), 2))
         painter.setBrush(Qt.NoBrush)
-        # drawArc utilise 1/16 de degre, 0 = 3h, sens anti-horaire
-        # On veut 0 deg = horizontal droite, 90 deg = vertical haut
-        # Soit de 0 (3h) a 90*16 (12h)
-        painter.drawArc(arc_rect, 0, 90 * 16)
+        # drawArc : 1/16 degre, 0 = 3h, positif = anti-horaire
+        # -30° a 90° = startAngle -30*16, span 120*16
+        painter.drawArc(arc_rect, -30 * 16, 120 * 16)
 
-        # Graduations
+        # Ligne horizontale 0° en pointille (reference)
+        painter.setPen(QPen(QColor(60, 60, 80), 1, Qt.DashLine))
+        painter.drawLine(QPointF(cx, cy), QPointF(cx + radius + 10, cy))
+
+        # Graduations de -30 a 90
         font = QFont("Consolas", 8)
         painter.setFont(font)
-        for deg in range(0, 91, 10):
+        for deg in range(-30, 91, 10):
             angle_rad = math.radians(deg)
             cos_a = math.cos(angle_rad)
             sin_a = math.sin(angle_rad)
@@ -68,15 +78,16 @@ class ElevationWidget(QWidget):
                 # Label
                 lx = cx + (radius + 18) * cos_a
                 ly = cy - (radius + 18) * sin_a
-                painter.drawText(QRectF(lx - 15, ly - 8, 30, 16),
-                                 Qt.AlignCenter, f"{deg}")
+                painter.drawText(QRectF(lx - 18, ly - 8, 36, 16),
+                                 Qt.AlignCenter, f"{deg}\u00b0")
             else:
                 painter.setPen(QPen(QColor(100, 100, 100), 1))
 
             painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
         # Marqueur cible (triangle rouge)
-        tgt_rad = math.radians(self._target_el)
+        tgt_clamped = max(-30.0, min(90.0, self._target_el))
+        tgt_rad = math.radians(tgt_clamped)
         tx = cx + (radius + 2) * math.cos(tgt_rad)
         ty = cy - (radius + 2) * math.sin(tgt_rad)
         painter.setPen(Qt.NoPen)
@@ -93,7 +104,8 @@ class ElevationWidget(QWidget):
         ])
 
         # Aiguille position courante
-        el_rad = math.radians(self._el)
+        el_clamped = max(-30.0, min(90.0, self._el))
+        el_rad = math.radians(el_clamped)
         nx = cx + (radius - 15) * math.cos(el_rad)
         ny = cy - (radius - 15) * math.sin(el_rad)
         color = QColor(50, 220, 50) if not self._moving else QColor(255, 160, 0)

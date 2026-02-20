@@ -216,25 +216,35 @@ static void appSendConfig() {
     const char *azNames[] = {"sim", "hh12", "as5048a"};
     const char *elNames[] = {"sim", "hh12", "witmotion", "as5048a"};
 
-    char buf[512];
+    char buf[768];
     int n = snprintf(buf, sizeof(buf),
         "{\"type\":\"config\","
         "\"mot_max_duty\":%.1f,"
         "\"mot_min_duty\":%.1f,"
         "\"mot_ramp_deg\":%.1f,"
         "\"mot_deadband\":%.1f,"
+        "\"az_min\":%.1f,"
+        "\"az_max\":%.1f,"
+        "\"el_min\":%.1f,"
+        "\"el_max\":%.1f,"
+        "\"el_offset_active\":%s,"
+        "\"el_offset\":%.1f,"
+        "\"maint_az\":%.1f,"
+        "\"maint_el\":%.1f,"
+        "\"debug\":%s,"
         "\"oled\":%s,"
-        "\"ethernet\":%s,"
         "\"gps\":%s,"
-        "\"mcp23017\":%s,"
         "\"nano_r4\":%s,"
         "\"az_encoder\":\"%s\","
         "\"el_sensor\":\"%s\"}\n",
         cfg.motMaxDuty, cfg.motMinDuty, cfg.motRampDeg, cfg.motDeadband,
+        cfg.azMin, cfg.azMax, cfg.elMin, cfg.elMax,
+        cfg.elOffsetActive ? "true" : "false",
+        cfg.elOffset,
+        cfg.maintAz, cfg.maintEl,
+        cfg.debugSerial ? "true" : "false",
         cfg.oledActive ? "true" : "false",
-        cfg.ethernetActive ? "true" : "false",
         cfg.gpsActive ? "true" : "false",
-        cfg.mcp23017Active ? "true" : "false",
         cfg.nanoR4Active ? "true" : "false",
         azNames[cfg.azEncoder],
         elNames[cfg.elSensor]);
@@ -303,26 +313,54 @@ static void appParseLine(const char *line) {
         bool reboot = false;
 
         // Moteur (hot)
-        if (doc.containsKey("mot_max_duty"))  cfg.motMaxDuty  = doc["mot_max_duty"];
-        if (doc.containsKey("mot_min_duty"))  cfg.motMinDuty  = doc["mot_min_duty"];
-        if (doc.containsKey("mot_ramp_deg"))  cfg.motRampDeg  = doc["mot_ramp_deg"];
-        if (doc.containsKey("mot_deadband"))  cfg.motDeadband = doc["mot_deadband"];
+        if (doc["mot_max_duty"].is<float>())  cfg.motMaxDuty  = doc["mot_max_duty"];
+        if (doc["mot_min_duty"].is<float>())  cfg.motMinDuty  = doc["mot_min_duty"];
+        if (doc["mot_ramp_deg"].is<float>())  cfg.motRampDeg  = doc["mot_ramp_deg"];
+        if (doc["mot_deadband"].is<float>())  cfg.motDeadband = doc["mot_deadband"];
 
-        // Modules (reboot)
-        if (doc.containsKey("oled"))     { cfg.oledActive     = doc["oled"];     reboot = true; }
-        if (doc.containsKey("ethernet")) { cfg.ethernetActive = doc["ethernet"]; reboot = true; }
-        if (doc.containsKey("gps"))      { cfg.gpsActive      = doc["gps"];      reboot = true; }
-        if (doc.containsKey("mcp23017")) { cfg.mcp23017Active = doc["mcp23017"]; reboot = true; }
-        if (doc.containsKey("nano_r4"))  { cfg.nanoR4Active   = doc["nano_r4"];  reboot = true; }
+        // Limites mécaniques (hot)
+        if (doc["az_min"].is<float>())  cfg.azMin = doc["az_min"];
+        if (doc["az_max"].is<float>())  cfg.azMax = doc["az_max"];
+        if (doc["el_min"].is<float>())  cfg.elMin = doc["el_min"];
+        if (doc["el_max"].is<float>())  cfg.elMax = doc["el_max"];
 
-        // Encodeurs (reboot)
-        if (doc.containsKey("az_encoder")) {
-            AzEncoderType az;
-            if (parseAzEncoder(doc["az_encoder"], az)) { cfg.azEncoder = az; reboot = true; }
+        // Offset élévation (hot)
+        if (doc["el_offset_active"].is<bool>())  cfg.elOffsetActive = doc["el_offset_active"];
+        if (doc["el_offset"].is<float>())        cfg.elOffset = doc["el_offset"];
+
+        // Position maintenance (hot)
+        if (doc["maint_az"].is<float>())  cfg.maintAz = doc["maint_az"];
+        if (doc["maint_el"].is<float>())  cfg.maintEl = doc["maint_el"];
+
+        // Debug série (hot)
+        if (doc["debug"].is<bool>()) {
+            cfg.debugSerial = doc["debug"];
+            g_debugSerial = cfg.debugSerial;
         }
-        if (doc.containsKey("el_sensor")) {
+
+        // Modules (reboot seulement si la valeur change)
+        if (doc["oled"].is<bool>()) {
+            bool v = doc["oled"]; if (v != cfg.oledActive) { cfg.oledActive = v; reboot = true; }
+        }
+        if (doc["gps"].is<bool>()) {
+            bool v = doc["gps"]; if (v != cfg.gpsActive) { cfg.gpsActive = v; reboot = true; }
+        }
+        if (doc["nano_r4"].is<bool>()) {
+            bool v = doc["nano_r4"]; if (v != cfg.nanoR4Active) { cfg.nanoR4Active = v; reboot = true; }
+        }
+
+        // Encodeurs (reboot seulement si la valeur change)
+        if (doc["az_encoder"].is<const char*>()) {
+            AzEncoderType az;
+            if (parseAzEncoder(doc["az_encoder"], az) && az != cfg.azEncoder) {
+                cfg.azEncoder = az; reboot = true;
+            }
+        }
+        if (doc["el_sensor"].is<const char*>()) {
             ElSensorType el;
-            if (parseElSensor(doc["el_sensor"], el)) { cfg.elSensor = el; reboot = true; }
+            if (parseElSensor(doc["el_sensor"], el) && el != cfg.elSensor) {
+                cfg.elSensor = el; reboot = true;
+            }
         }
 
         // Clamp moteur
@@ -332,6 +370,10 @@ static void appParseLine(const char *line) {
         if (cfg.motMinDuty > cfg.motMaxDuty) cfg.motMinDuty = cfg.motMaxDuty;
         if (cfg.motRampDeg < 1.0f)   cfg.motRampDeg = 1.0f;
         if (cfg.motDeadband < 0.1f)  cfg.motDeadband = 0.1f;
+
+        // Clamp limites
+        if (cfg.azMin >= cfg.azMax) { cfg.azMin = 0.0f; cfg.azMax = 360.0f; }
+        if (cfg.elMin >= cfg.elMax) { cfg.elMin = 0.0f; cfg.elMax = 90.0f; }
 
         char ack[64];
         snprintf(ack, sizeof(ack),
@@ -354,6 +396,24 @@ static void appParseLine(const char *line) {
         appClient.write((const uint8_t*)r, strlen(r));
         appSendConfig();
         return;
+    }
+    else if (strcmp(cmd, "goto_maint") == 0) {
+        // Aller à la position maintenance — traité comme un goto classique
+        parsed.cmd = CMD_GOTO_AZEL;
+        parsed.az = cfg.maintAz;
+        parsed.el = cfg.maintEl;
+        DEBUG_PRINT("[APP] Goto maintenance AZ=");
+        DEBUG_PRINT(cfg.maintAz);
+        DEBUG_PRINT(" EL=");
+        DEBUG_PRINTLN(cfg.maintEl);
+    }
+    else if (strcmp(cmd, "reboot") == 0) {
+        const char *r = "{\"type\":\"rebooting\"}\n";
+        appClient.write((const uint8_t*)r, strlen(r));
+        appClient.flush();
+        DEBUG_PRINTLN("[APP] Reboot demandé par l'app");
+        delay(200);  // laisser le temps d'envoyer la réponse
+        ESP.restart();
     }
 
     if (parsed.cmd != CMD_NONE) {

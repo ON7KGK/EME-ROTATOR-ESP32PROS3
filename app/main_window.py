@@ -13,6 +13,7 @@ from PySide6.QtGui import QFont
 
 from rotator_client import RotatorClient
 from widgets import CompassWidget, ElevationWidget, StatusPanel
+from widgets.settings_dialog import SettingsDialog
 
 
 class MainWindow(QMainWindow):
@@ -65,6 +66,13 @@ class MainWindow(QMainWindow):
         self.client.statusReceived.connect(self.onStatusReceived)
         self.client.connectionChanged.connect(self.onConnectionChanged)
         self.client.errorOccurred.connect(self.onError)
+        self.client.configReceived.connect(self._onConfigReceived)
+        self.client.configAck.connect(self._onConfigAck)
+        self.client.configSaved.connect(self._onConfigSaved)
+        self.client.configReset.connect(self._onConfigReset)
+
+        # Dialogue configuration (cree a la demande)
+        self._settingsDialog = None
 
         self._buildUI()
 
@@ -87,6 +95,16 @@ class MainWindow(QMainWindow):
         self.btnConnect = QPushButton("Connect")
         self.btnConnect.clicked.connect(self.onConnectClicked)
         connLayout.addWidget(self.btnConnect)
+
+        # Bouton engrenage (configuration)
+        self.btnSettings = QPushButton("\u2699")
+        self.btnSettings.setToolTip("Configuration ESP32")
+        self.btnSettings.setStyleSheet(
+            "QPushButton { font-size: 20px; padding: 2px 8px; }"
+            "QPushButton:hover { background-color: #4a4a7e; }"
+        )
+        self.btnSettings.clicked.connect(self.onSettingsClicked)
+        connLayout.addWidget(self.btnSettings)
         connLayout.addStretch()
         mainLayout.addLayout(connLayout)
 
@@ -145,7 +163,7 @@ class MainWindow(QMainWindow):
         gotoLayout.addWidget(self.spinAz, 0, 1)
         gotoLayout.addWidget(QLabel("EL:"), 1, 0)
         self.spinEl = QDoubleSpinBox()
-        self.spinEl.setRange(0.0, 90.0)
+        self.spinEl.setRange(-30.0, 90.0)
         self.spinEl.setDecimals(1)
         self.spinEl.setSuffix("\u00b0")
         gotoLayout.addWidget(self.spinEl, 1, 1)
@@ -189,6 +207,16 @@ class MainWindow(QMainWindow):
         )
         self.btnStop.clicked.connect(self.onStop)
         ctrlLayout.addWidget(self.btnStop)
+
+        # Maintenance (position NVS)
+        self.btnMaint = QPushButton("\u2699 MAINTENANCE")
+        self.btnMaint.setToolTip("Aller a la position de maintenance (configuree dans NVS)")
+        self.btnMaint.setStyleSheet(
+            "QPushButton { background-color: #886600; font-weight: bold; }"
+            "QPushButton:hover { background-color: #aa8800; }"
+        )
+        self.btnMaint.clicked.connect(self.onMaintenance)
+        ctrlLayout.addWidget(self.btnMaint)
 
         ctrlLayout.addStretch()
         centerLayout.addWidget(ctrlGroup)
@@ -319,6 +347,52 @@ class MainWindow(QMainWindow):
 
     def onStop(self):
         self.client.sendCommand({"cmd": "stop"})
+
+    def onMaintenance(self):
+        self.client.sendCommand({"cmd": "goto_maint"})
+
+    # ════════════════════════════════════════════
+    # Configuration (engrenage)
+    # ════════════════════════════════════════════
+
+    def onSettingsClicked(self):
+        """Ouvre le dialogue de configuration et demande la config a l'ESP32."""
+        if not self.client.isRunning():
+            QMessageBox.warning(self, "Non connecte",
+                                "Connectez-vous d'abord a l'ESP32.")
+            return
+
+        if self._settingsDialog is None:
+            self._settingsDialog = SettingsDialog(self)
+            self._settingsDialog.sendCommand.connect(self.client.sendCommand)
+        self._settingsDialog.show()
+        self._settingsDialog.raise_()
+        # Demander la config actuelle
+        self.client.sendCommand({"cmd": "get_config"})
+
+    @Slot(dict)
+    def _onConfigReceived(self, cfg: dict):
+        """Config recue de l'ESP32 → remplir le dialogue."""
+        if self._settingsDialog is not None:
+            self._settingsDialog.loadFromConfig(cfg)
+
+    @Slot(dict)
+    def _onConfigAck(self, data: dict):
+        """Reponse a set_config."""
+        if self._settingsDialog is not None:
+            self._settingsDialog.onConfigAck(data)
+
+    @Slot()
+    def _onConfigSaved(self):
+        """Reponse a save_config."""
+        if self._settingsDialog is not None:
+            self._settingsDialog.onConfigSaved()
+
+    @Slot()
+    def _onConfigReset(self):
+        """Reponse a reset_config."""
+        if self._settingsDialog is not None:
+            self._settingsDialog.onConfigReset()
 
     def closeEvent(self, event):
         self.client.disconnectFrom()

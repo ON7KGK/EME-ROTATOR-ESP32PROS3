@@ -13,6 +13,11 @@ class RotatorClient(QThread):
 
     # Signaux vers la GUI
     statusReceived = Signal(dict)       # Status JSON recu
+    configReceived = Signal(dict)       # Config JSON recue (get_config)
+    configAck = Signal(dict)            # Reponse set_config
+    configSaved = Signal()              # Reponse save_config
+    configReset = Signal()              # Reponse reset_config
+    rebooting = Signal()                # ESP32 va redemarrer
     connectionChanged = Signal(bool)    # True=connecte, False=deconnecte
     errorOccurred = Signal(str)         # Message d'erreur
 
@@ -66,8 +71,19 @@ class RotatorClient(QThread):
                         continue
                     try:
                         msg = json.loads(line)
-                        if msg.get("type") == "status":
+                        mtype = msg.get("type")
+                        if mtype == "status":
                             self.statusReceived.emit(msg)
+                        elif mtype == "config":
+                            self.configReceived.emit(msg)
+                        elif mtype == "config_ack":
+                            self.configAck.emit(msg)
+                        elif mtype == "config_saved":
+                            self.configSaved.emit()
+                        elif mtype == "config_reset":
+                            self.configReset.emit()
+                        elif mtype == "rebooting":
+                            self.rebooting.emit()
                     except json.JSONDecodeError:
                         pass
 

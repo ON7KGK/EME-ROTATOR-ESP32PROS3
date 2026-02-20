@@ -34,6 +34,23 @@ struct RuntimeConfig {
     float motRampDeg;       // ° zone de rampe proportionnelle
     float motDeadband;      // ° zone morte
 
+    // Limites mécaniques — modifiables à chaud
+    float azMin;            // ° limite CCW (défaut 0)
+    float azMax;            // ° limite CW (défaut 360)
+    float elMin;            // ° limite DOWN (défaut 0)
+    float elMax;            // ° limite UP (défaut 90)
+
+    // Offset élévation (parabole offset-fed) — modifiable à chaud
+    bool  elOffsetActive;   // appliquer l'offset au faisceau
+    float elOffset;         // ° décalage (ex: 25° pour offset dish)
+
+    // Position maintenance — stockée NVS
+    float maintAz;          // ° AZ position maintenance
+    float maintEl;          // ° EL position maintenance
+
+    // Debug série — modifiable à chaud
+    bool debugSerial;       // activer/désactiver messages Serial
+
     // Modules actifs — prennent effet au reboot
     bool oledActive;
     bool ethernetActive;

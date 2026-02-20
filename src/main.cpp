@@ -10,6 +10,10 @@
 #include <atomic>
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
+
+// Variable globale debug (référencée par les macros DEBUG_PRINT/PRINTLN)
+bool g_debugSerial = true;  // actif par défaut avant cfgInit()
+
 #include "config.h"
 #include "nvs_config.h"
 #include "protocol.h"
@@ -152,8 +156,8 @@ void task_pid_loop(void *param) {
                 float diff = targetAz - currentAz;
                 currentAz += (fabsf(diff) <= stepAz) ? diff
                            : ((diff > 0) ? stepAz : -stepAz);
-                if (currentAz < AZ_MIN) currentAz = AZ_MIN;
-                if (currentAz > AZ_MAX) currentAz = AZ_MAX;
+                if (currentAz < cfg.azMin) currentAz = cfg.azMin;
+                if (currentAz > cfg.azMax) currentAz = cfg.azMax;
                 moving = true;
             }
         }
@@ -180,8 +184,8 @@ void task_pid_loop(void *param) {
                 float diff = targetEl - currentEl;
                 currentEl += (fabsf(diff) <= stepEl) ? diff
                            : ((diff > 0) ? stepEl : -stepEl);
-                if (currentEl < EL_MIN) currentEl = EL_MIN;
-                if (currentEl > EL_MAX) currentEl = EL_MAX;
+                if (currentEl < cfg.elMin) currentEl = cfg.elMin;
+                if (currentEl > cfg.elMax) currentEl = cfg.elMax;
                 moving = true;
             }
         }
@@ -236,6 +240,9 @@ void handleCommand(ParsedCommand &cmd, Stream &output) {
     // Toute commande reçue rafraîchit le timestamp (détection stale)
     lastCommandTime = millis();
 
+    // Offset EL : commande entrante = élévation faisceau → convertir en physique
+    float elOff = (cfg.elOffsetActive) ? cfg.elOffset : 0.0f;
+
     switch (cmd.cmd) {
         case CMD_QUERY_POS:
         case CMD_QUERY_AZ:
@@ -248,7 +255,7 @@ void handleCommand(ParsedCommand &cmd, Stream &output) {
             break;
 
         case CMD_GOTO_AZ:
-            targetAz = constrain(cmd.az, AZ_MIN, AZ_MAX);
+            targetAz = constrain(cmd.az, cfg.azMin, cfg.azMax);
             g_targetAz.store(targetAz, std::memory_order_relaxed);
             #if ENABLE_EEPROM
                 targetChanged = true;
@@ -258,7 +265,7 @@ void handleCommand(ParsedCommand &cmd, Stream &output) {
             break;
 
         case CMD_GOTO_EL:
-            targetEl = constrain(cmd.el, EL_MIN, EL_MAX);
+            targetEl = constrain(cmd.el - elOff, cfg.elMin, cfg.elMax);
             g_targetEl.store(targetEl, std::memory_order_relaxed);
             #if ENABLE_EEPROM
                 targetChanged = true;
@@ -268,8 +275,8 @@ void handleCommand(ParsedCommand &cmd, Stream &output) {
             break;
 
         case CMD_GOTO_AZEL:
-            targetAz = constrain(cmd.az, AZ_MIN, AZ_MAX);
-            targetEl = constrain(cmd.el, EL_MIN, EL_MAX);
+            targetAz = constrain(cmd.az, cfg.azMin, cfg.azMax);
+            targetEl = constrain(cmd.el - elOff, cfg.elMin, cfg.elMax);
             g_targetAz.store(targetAz, std::memory_order_relaxed);
             g_targetEl.store(targetEl, std::memory_order_relaxed);
             #if ENABLE_EEPROM
@@ -302,25 +309,25 @@ void handleCommand(ParsedCommand &cmd, Stream &output) {
             break;
 
         case CMD_JOG_CW:
-            targetAz = AZ_MAX;
+            targetAz = cfg.azMax;
             g_targetAz.store(targetAz, std::memory_order_relaxed);
             DEBUG_PRINTLN("[CMD] JOG CW");
             break;
 
         case CMD_JOG_CCW:
-            targetAz = AZ_MIN;
+            targetAz = cfg.azMin;
             g_targetAz.store(targetAz, std::memory_order_relaxed);
             DEBUG_PRINTLN("[CMD] JOG CCW");
             break;
 
         case CMD_JOG_UP:
-            targetEl = EL_MAX;
+            targetEl = cfg.elMax;
             g_targetEl.store(targetEl, std::memory_order_relaxed);
             DEBUG_PRINTLN("[CMD] JOG UP");
             break;
 
         case CMD_JOG_DOWN:
-            targetEl = EL_MIN;
+            targetEl = cfg.elMin;
             g_targetEl.store(targetEl, std::memory_order_relaxed);
             DEBUG_PRINTLN("[CMD] JOG DOWN");
             break;
@@ -339,8 +346,10 @@ void handleCommand(ParsedCommand &cmd, Stream &output) {
     }
 
     // Réponse position EasyCom après chaque commande
+    // Appliquer l'offset EL pour rapporter l'élévation faisceau
     if (cmd.cmd != CMD_VERSION && cmd.cmd != CMD_UNKNOWN && cmd.cmd != CMD_NONE) {
-        protocolSendPosition(output, currentAz, currentEl);
+        float reportEl = currentEl + elOff;
+        protocolSendPosition(output, currentAz, reportEl);
     }
 }
 
@@ -385,6 +394,7 @@ void setup() {
     }
     #endif
     cfgInit();
+    g_debugSerial = cfg.debugSerial;  // appliquer le flag debug runtime
 
     // ── Scan I2C bus (diagnostic) ──
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, I2C_SPEED);
@@ -412,8 +422,8 @@ void setup() {
         if (eepromInit()) {
             EepromPositionBlock savedBlock;
             if (eepromReadBest(savedBlock)) {
-                targetAz = constrain(savedBlock.target_az_deg, AZ_MIN, AZ_MAX);
-                targetEl = constrain(savedBlock.target_el_deg, EL_MIN, EL_MAX);
+                targetAz = constrain(savedBlock.target_az_deg, cfg.azMin, cfg.azMax);
+                targetEl = constrain(savedBlock.target_el_deg, cfg.elMin, cfg.elMax);
                 g_targetAz.store(targetAz, std::memory_order_relaxed);
                 g_targetEl.store(targetEl, std::memory_order_relaxed);
                 DEBUG_PRINT("[EEPROM] Cible restaurée: AZ=");
@@ -783,9 +793,17 @@ void loop() {
 
             // ── JSON push vers app Windows (port 4534) ──
             #if ENABLE_APP_TCP && ENABLE_ETHERNET
-                if (cfg.ethernetActive)
-                    appSendStatus(currentAz, currentEl, targetAz, targetEl,
+                if (cfg.ethernetActive) {
+                    // Appliquer l'offset EL pour le reporting (position faisceau)
+                    float reportEl = currentEl;
+                    float reportTgtEl = targetEl;
+                    if (cfg.elOffsetActive) {
+                        reportEl += cfg.elOffset;
+                        reportTgtEl += cfg.elOffset;
+                    }
+                    appSendStatus(currentAz, reportEl, targetAz, reportTgtEl,
                                   stateStr, isMoving, isStopped, gpsOk, stale);
+                }
             #endif
         }
     }
