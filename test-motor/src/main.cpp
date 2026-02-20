@@ -1,9 +1,8 @@
 // ════════════════════════════════════════════════════════════════
-// TEST DIAGNOSTIC — MC33926 Dual Motor Driver
+// TEST MC33926 — Séquence AZ CW/CCW + EL UP/DOWN
 // ════════════════════════════════════════════════════════════════
-// Phase 1 : GPIO direct (digitalWrite) — pas de MCPWM
-// Phase 2 : MCPWM si phase 1 OK
-// Diagnostics : relecture MCP23017, SF, courant ADC
+// Câblage corrigé : D1=GND, D2=PWM (IO21/38), EN=3.3V
+// 5 secondes par direction, diagnostic SF + courant FB
 // ════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
@@ -14,23 +13,25 @@
 #define PIN_I2C_SCL     9
 #define PIN_MOT_AZ_D2   21   // D2 du MC33926 M1 (AZ)
 #define PIN_MOT_EL_D2   38   // D2 du MC33926 M2 (EL)
-#define PIN_MOT_AZ_FB   1    // IO1 — ADC courant AZ
-#define PIN_MOT_EL_FB   2    // IO2 — ADC courant EL
+#define PIN_MOT_AZ_FB   1    // ADC courant AZ
+#define PIN_MOT_EL_FB   2    // ADC courant EL
 
-// ── MCP23017 registres ──
+// ── MCP23017 ──
 #define MCP_ADDR        0x27
-#define REG_IODIRA      0x00
 #define REG_IODIRB      0x01
 #define REG_GPPUB       0x0D
-#define REG_GPIOA       0x12
 #define REG_GPIOB       0x13
 
 // Port B : PB0=M1_IN1, PB1=M1_IN2, PB2=M2_IN1, PB3=M2_IN2
-//          PB4=M1_SF,  PB5=M2_SF (entrées, active LOW = fault)
-#define DIR_AZ_CW       0x01  // IN1=H, IN2=L → forward
-#define DIR_AZ_CCW      0x02  // IN1=L, IN2=H → reverse
+//          PB4=M1_SF,  PB5=M2_SF
+#define DIR_AZ_CW       0x01  // IN1=H, IN2=L
+#define DIR_AZ_CCW      0x02  // IN1=L, IN2=H
 #define DIR_EL_UP       0x04
 #define DIR_EL_DOWN     0x08
+
+#define DUTY_PERCENT    30.0f
+#define RUN_TIME_MS     5000
+#define PAUSE_TIME_MS   2000
 
 // ── MCP23017 accès direct ──
 static void mcpWrite(uint8_t reg, uint8_t val) {
@@ -48,31 +49,18 @@ static uint8_t mcpRead(uint8_t reg) {
     return Wire.available() ? Wire.read() : 0xFF;
 }
 
-// ── Diagnostic : lire et afficher état complet ──
-static void printDiag(const char *phase) {
+// ── Diagnostic ──
+static void printDiag() {
     uint8_t portB = mcpRead(REG_GPIOB);
-    bool sf1 = !(portB & 0x10);  // M1_SF, active LOW
-    bool sf2 = !(portB & 0x20);  // M2_SF, active LOW
-
+    bool sf1 = !(portB & 0x10);
+    bool sf2 = !(portB & 0x20);
     uint16_t fbAz = (uint16_t)((analogRead(PIN_MOT_AZ_FB) * 3300UL) / 4095);
     uint16_t fbEl = (uint16_t)((analogRead(PIN_MOT_EL_FB) * 3300UL) / 4095);
 
-    Serial.print("  [DIAG] ");
-    Serial.print(phase);
-    Serial.print(" | PortB=0b");
-    for (int i = 7; i >= 0; i--) Serial.print((portB >> i) & 1);
-    Serial.print(" | IN: AZ_IN1=");
-    Serial.print((portB >> 0) & 1);
-    Serial.print(" AZ_IN2=");
-    Serial.print((portB >> 1) & 1);
-    Serial.print(" EL_IN1=");
-    Serial.print((portB >> 2) & 1);
-    Serial.print(" EL_IN2=");
-    Serial.print((portB >> 3) & 1);
-    Serial.print(" | SF: M1=");
-    Serial.print(sf1 ? "FAULT!" : "ok");
+    Serial.print("    SF: M1=");
+    Serial.print(sf1 ? "FAULT" : "ok");
     Serial.print(" M2=");
-    Serial.print(sf2 ? "FAULT!" : "ok");
+    Serial.print(sf2 ? "FAULT" : "ok");
     Serial.print(" | FB: AZ=");
     Serial.print(fbAz);
     Serial.print("mV EL=");
@@ -80,43 +68,20 @@ static void printDiag(const char *phase) {
     Serial.println("mV");
 }
 
-// ── Test une direction avec digitalWrite (pas de PWM) ──
-static void testDirect(const char *name, uint8_t dirBits, int d2pin) {
-    Serial.println();
-    Serial.print(">>> TEST DIRECT: ");
-    Serial.print(name);
-    Serial.println(" — D2 = digitalWrite HIGH (100%)");
+// ── Séquence de test ──
+struct TestPhase {
+    const char *name;
+    uint8_t dir;
+    int d2pin;
+};
 
-    // Direction via MCP23017
-    uint8_t portB = mcpRead(REG_GPIOB);
-    portB = (portB & 0xF0) | (dirBits & 0x0F);
-    mcpWrite(REG_GPIOB, portB);
-    delay(10);
-
-    printDiag("avant D2");
-
-    // D2 = HIGH → moteur ON à 100%
-    digitalWrite(d2pin, HIGH);
-    Serial.println("  D2 = HIGH — moteur devrait tourner pendant 15s");
-
-    // Diagnostics pendant le fonctionnement
-    for (int t = 0; t < 15; t++) {
-        delay(1000);
-        char buf[16];
-        snprintf(buf, sizeof(buf), "t=%ds", t + 1);
-        printDiag(buf);
-    }
-
-    // D2 = LOW → moteur OFF
-    digitalWrite(d2pin, LOW);
-    Serial.println("  D2 = LOW — arrêt");
-
-    // Remettre directions à 0
-    portB = mcpRead(REG_GPIOB);
-    mcpWrite(REG_GPIOB, portB & 0xF0);
-    delay(500);
-    printDiag("repos");
-}
+static const TestPhase phases[] = {
+    { "AZ CW  (droite)",  DIR_AZ_CW,   PIN_MOT_AZ_D2 },
+    { "AZ CCW (gauche)",  DIR_AZ_CCW,  PIN_MOT_AZ_D2 },
+    { "EL UP  (haut)",    DIR_EL_UP,   PIN_MOT_EL_D2 },
+    { "EL DOWN (bas)",    DIR_EL_DOWN, PIN_MOT_EL_D2 },
+};
+static const int NUM_PHASES = sizeof(phases) / sizeof(phases[0]);
 
 void setup() {
     pinMode(17, OUTPUT);
@@ -128,21 +93,21 @@ void setup() {
 
     Serial.println();
     Serial.println("════════════════════════════════════════");
-    Serial.println("  DIAGNOSTIC MC33926 — Phase GPIO");
+    Serial.println("  TEST MC33926 — D1=GND, D2=GPIO, EN=3.3V");
+    Serial.println("  5s par direction, duty 30%");
     Serial.println("════════════════════════════════════════");
 
-    // ── D2 pins en sortie simple (pas MCPWM) ──
+    // D2 = LOW au départ (moteurs off)
     pinMode(PIN_MOT_AZ_D2, OUTPUT);
     pinMode(PIN_MOT_EL_D2, OUTPUT);
     digitalWrite(PIN_MOT_AZ_D2, LOW);
     digitalWrite(PIN_MOT_EL_D2, LOW);
-    Serial.println("[OK] D2 pins: IO21=LOW, IO38=LOW (moteurs off)");
 
-    // ── ADC courant ──
+    // ADC courant
     pinMode(PIN_MOT_AZ_FB, INPUT);
     pinMode(PIN_MOT_EL_FB, INPUT);
 
-    // ── I2C ──
+    // I2C
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);
     delay(500);
 
@@ -155,16 +120,13 @@ void setup() {
             Serial.println(String(addr, HEX));
         }
     }
-
     Wire.setClock(400000);
 
-    // MCP23017 check
+    // MCP23017
     bool mcpFound = false;
     for (int attempt = 0; attempt < 3; attempt++) {
         Wire.beginTransmission(MCP_ADDR);
         if (Wire.endTransmission() == 0) { mcpFound = true; break; }
-        Serial.print("[I2C] MCP tentative ");
-        Serial.println(attempt + 1);
         delay(500);
     }
     if (!mcpFound) {
@@ -173,50 +135,50 @@ void setup() {
     }
     Serial.println("[OK] MCP23017 à 0x27");
 
-    // MCP23017 config
-    mcpWrite(REG_IODIRB, 0x30);  // PB0-3 output, PB4-5 input (SF), PB6-7 output
+    mcpWrite(REG_IODIRB, 0x30);  // PB0-3 output, PB4-5 input
     mcpWrite(REG_GPPUB, 0x30);   // Pull-up sur SF
-    mcpWrite(REG_GPIOB, 0x00);   // Tout à 0
+    mcpWrite(REG_GPIOB, 0x00);   // Directions = 0
 
-    // Vérification relecture
-    uint8_t iodirb = mcpRead(REG_IODIRB);
-    uint8_t portb  = mcpRead(REG_GPIOB);
-    Serial.print("[MCP] IODIRB=0x");
-    Serial.print(String(iodirb, HEX));
-    Serial.print("  GPIOB=0x");
-    Serial.println(String(portb, HEX));
-
-    // Lire SF au repos
-    printDiag("repos initial");
+    Serial.println("[OK] MCP23017 configuré");
+    printDiag();
 
     Serial.println();
-    Serial.println("Câblage attendu :");
-    Serial.println("  D1  → 3.3V     EN → 3.3V (ou flottant)");
-    Serial.println("  D2  → IO21/38  SLEW → VDD");
-    Serial.println("  IN1 → MCP PB0/PB2   IN2 → MCP PB1/PB3");
-    Serial.println();
-    // ════════════════════════════════════
-    // AZ CW permanent — prends ton temps pour mesurer
-    // ════════════════════════════════════
-    Serial.println(">>> AZ CW PERMANENT — D2 (IO21) = HIGH, IN1=1, IN2=0");
-    Serial.println("    Mesurer : IO21, M1D1, M1D2, M1IN1, M1IN2, M1OUT1, M1OUT2");
-    Serial.println();
-
-    // Direction AZ CW via MCP23017
-    uint8_t portB = mcpRead(REG_GPIOB);
-    portB = (portB & 0xF0) | DIR_AZ_CW;
-    mcpWrite(REG_GPIOB, portB);
-    delay(10);
-
-    // D2 = HIGH
-    digitalWrite(PIN_MOT_AZ_D2, HIGH);
-    Serial.println("    IO21 = HIGH, direction AZ CW active");
-    Serial.println("    Diag toutes les 5s — CTRL+C pour arrêter");
-    Serial.println();
+    Serial.println("Démarrage dans 3s...");
+    delay(3000);
 }
 
 void loop() {
-    // Diag toutes les 5 secondes, indéfiniment
-    printDiag("AZ CW actif");
-    delay(5000);
+    for (int i = 0; i < NUM_PHASES; i++) {
+        const TestPhase &p = phases[i];
+
+        Serial.println();
+        Serial.print(">>> ");
+        Serial.println(p.name);
+
+        // Direction via MCP23017
+        uint8_t portB = mcpRead(REG_GPIOB);
+        portB = (portB & 0xF0) | (p.dir & 0x0F);
+        mcpWrite(REG_GPIOB, portB);
+        delay(10);
+
+        // D2 = HIGH → moteur ON
+        digitalWrite(p.d2pin, HIGH);
+        Serial.println("    MOTEUR ON (30%)");
+
+        // Diag pendant le fonctionnement
+        for (int t = 0; t < 5; t++) {
+            delay(1000);
+            printDiag();
+        }
+
+        // D2 = LOW → moteur OFF
+        digitalWrite(p.d2pin, LOW);
+        mcpWrite(REG_GPIOB, mcpRead(REG_GPIOB) & 0xF0);
+        Serial.println("    STOP");
+
+        delay(PAUSE_TIME_MS);
+    }
+
+    Serial.println();
+    Serial.println("──── Cycle complet ────");
 }

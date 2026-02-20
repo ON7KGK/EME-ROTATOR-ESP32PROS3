@@ -1,7 +1,8 @@
 // ════════════════════════════════════════════════════════════════
 // EME ROTATOR CONTROLLER — Module MC33926 Motor Driver (Impl.)
 // ════════════════════════════════════════════════════════════════
-// API MCPWM legacy (ESP-IDF 4.4, framework Arduino ESP32 2.0.x)
+// LEDC PWM — remplace MCPWM legacy qui ne fonctionne pas sur
+// ESP32-S3 (mcpwm_set_signal_low bloque la sortie)
 // ════════════════════════════════════════════════════════════════
 
 #include "config.h"
@@ -9,45 +10,45 @@
 #if ENABLE_MOTORS
 
 #include "motor.h"
-#include "driver/mcpwm.h"
+
+// Canaux LEDC (0–15 disponibles sur ESP32-S3)
+#define LEDC_CH_AZ  0
+#define LEDC_CH_EL  1
+#define LEDC_BITS   8              // 8-bit résolution (0-255)
+#define LEDC_MAX    ((1 << LEDC_BITS) - 1)  // 255
 
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
 // ════════════════════════════════════════════════════════════════
 
 void motorInit() {
-    // Assigner les GPIO aux sorties MCPWM
-    // AZ = MCPWM unit 0, operator 0, sortie A
-    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, PIN_MOT_AZ_PWM);
-    // EL = MCPWM unit 0, operator 1, sortie A
-    mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM1A, PIN_MOT_EL_PWM);
+    // Configurer canaux LEDC : fréquence + résolution
+    ledcSetup(LEDC_CH_AZ, MOT_PWM_FREQ, LEDC_BITS);
+    ledcSetup(LEDC_CH_EL, MOT_PWM_FREQ, LEDC_BITS);
 
-    // Configuration commune : 20 kHz, duty 0%
-    mcpwm_config_t cfg;
-    cfg.frequency = MOT_PWM_FREQ;
-    cfg.cmpr_a = 0.0f;
-    cfg.cmpr_b = 0.0f;
-    cfg.duty_mode = MCPWM_DUTY_MODE_0;
-    cfg.counter_mode = MCPWM_UP_COUNTER;
+    // Attacher GPIO aux canaux
+    ledcAttachPin(PIN_MOT_AZ_PWM, LEDC_CH_AZ);
+    ledcAttachPin(PIN_MOT_EL_PWM, LEDC_CH_EL);
 
-    mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_0, &cfg);  // AZ
-    mcpwm_init(MCPWM_UNIT_0, MCPWM_TIMER_1, &cfg);  // EL
+    // Démarrer à 0% (D2 = LOW → MC33926 désactivé)
+    ledcWrite(LEDC_CH_AZ, 0);
+    ledcWrite(LEDC_CH_EL, 0);
 
-    // Démarrer avec sortie LOW (pas de PWM = frein)
-    mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A);
-    mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A);
-
-    // Configurer ADC pour lecture courant (analogRead suffit)
+    // ADC pour lecture courant
     pinMode(PIN_MOT_AZ_FB, INPUT);
     pinMode(PIN_MOT_EL_FB, INPUT);
 
-    DEBUG_PRINT("[MOT] MCPWM init: AZ=IO");
+    DEBUG_PRINT("[MOT] LEDC init: AZ=IO");
     DEBUG_PRINT(PIN_MOT_AZ_PWM);
-    DEBUG_PRINT(" EL=IO");
+    DEBUG_PRINT(" (ch");
+    DEBUG_PRINT(LEDC_CH_AZ);
+    DEBUG_PRINT(") EL=IO");
     DEBUG_PRINT(PIN_MOT_EL_PWM);
-    DEBUG_PRINT(" @ ");
+    DEBUG_PRINT(" (ch");
+    DEBUG_PRINT(LEDC_CH_EL);
+    DEBUG_PRINT(") @ ");
     DEBUG_PRINT(MOT_PWM_FREQ / 1000);
-    DEBUG_PRINTLN(" kHz");
+    DEBUG_PRINTLN(" kHz, 8-bit");
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -56,29 +57,27 @@ void motorInit() {
 
 void motorSetDutyAz(float duty) {
     if (duty <= 0.0f) {
-        mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A);
+        ledcWrite(LEDC_CH_AZ, 0);
     } else {
         if (duty > 100.0f) duty = 100.0f;
-        mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, duty);
-        mcpwm_set_duty_type(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A,
-                            MCPWM_DUTY_MODE_0);
+        uint32_t raw = (uint32_t)(duty * LEDC_MAX / 100.0f);
+        ledcWrite(LEDC_CH_AZ, raw);
     }
 }
 
 void motorSetDutyEl(float duty) {
     if (duty <= 0.0f) {
-        mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A);
+        ledcWrite(LEDC_CH_EL, 0);
     } else {
         if (duty > 100.0f) duty = 100.0f;
-        mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A, duty);
-        mcpwm_set_duty_type(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A,
-                            MCPWM_DUTY_MODE_0);
+        uint32_t raw = (uint32_t)(duty * LEDC_MAX / 100.0f);
+        ledcWrite(LEDC_CH_EL, raw);
     }
 }
 
 void motorBrakeAll() {
-    mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A);
-    mcpwm_set_signal_low(MCPWM_UNIT_0, MCPWM_TIMER_1, MCPWM_OPR_A);
+    ledcWrite(LEDC_CH_AZ, 0);
+    ledcWrite(LEDC_CH_EL, 0);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -86,7 +85,6 @@ void motorBrakeAll() {
 // ════════════════════════════════════════════════════════════════
 
 uint16_t motorReadCurrentAzMv() {
-    // ADC ESP32-S3 : 12 bits, 0-3.3V par défaut
     return (uint16_t)((analogRead(PIN_MOT_AZ_FB) * 3300UL) / 4095);
 }
 

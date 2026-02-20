@@ -27,7 +27,7 @@
 #define ENABLE_MCP23017       1   // MCP23017 I2C (limites, boutons, direction moteur, LEDs) — ✅ TEST
 
 // ── MOTEURS ──
-#define ENABLE_MOTORS         1   // MC33926 (MCPWM + ADC courant) — ✅ TEST
+#define ENABLE_MOTORS         1   // MC33926 (LEDC PWM + ADC courant) — ✅ TEST
 #define ENABLE_PID            0   // Boucle PID 100 Hz Core 1
 
 // ── ENCODEUR AZ — choisir UN seul ──
@@ -136,9 +136,9 @@
 // ── MCP23017 — Interrupt ──
 #define PIN_MCP_INT         16   // IO16 — Input, interrupt (limites + boutons + SF)
 
-// ── MCPWM — Motor PWM (via MC33926 D2) ──
-#define PIN_MOT_AZ_PWM      21   // IO21 — MCPWM timer 0, operator A
-#define PIN_MOT_EL_PWM      38   // IO38 — MCPWM timer 1, operator A
+// ── LEDC — Motor PWM (via MC33926 D2) ──
+#define PIN_MOT_AZ_PWM      21   // IO21 — LEDC ch0 (D2 AZ)
+#define PIN_MOT_EL_PWM      38   // IO38 — LEDC ch1 (D2 EL)
 
 // ── GPS PPS ──
 #define PIN_GPS_PPS         34   // IO34 — PPS interrupt (1 Hz, rising edge = UTC)
@@ -212,8 +212,10 @@
 // Moteurs MC33926 (quand ENABLE_MOTORS = 1)
 // ═══════════════════════════════════════════════════════════════
 #define MOT_PWM_FREQ        20000   // 20 kHz (fast slew mode)
-#define MOT_DEFAULT_DUTY    40.0f   // % duty premier test (prudent)
-#define MOT_DEADBAND_DEG    1.0f    // ° zone morte (pas de mouvement)
+#define MOT_MAX_DUTY        90.0f   // % duty max (jamais 100% → marge thermique)
+#define MOT_MIN_DUTY        20.0f   // % duty min (en dessous le moteur cale)
+#define MOT_RAMP_DEG        10.0f   // ° début rampe (proportionnel en dessous)
+#define MOT_DEADBAND_DEG    0.2f    // ° zone morte (encodeur 0.1° → deadband 2×)
 #define MOT_CONTROL_MS      100     // Période contrôle moteur (ms)
 
 // ═══════════════════════════════════════════════════════════════

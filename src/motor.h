@@ -1,9 +1,9 @@
 // ════════════════════════════════════════════════════════════════
 // EME ROTATOR CONTROLLER — Module MC33926 Motor Driver
 // ════════════════════════════════════════════════════════════════
-// 2× MC33926 pont H via MCPWM ESP32-S3
-// AZ : MCPWM unit 0, timer 0 → IO21 (D2 PWM)
-// EL : MCPWM unit 0, timer 1 → IO38 (D2 PWM)
+// 2× MC33926 pont H via LEDC PWM ESP32-S3
+// AZ : LEDC ch0 → IO21 (D2 PWM)
+// EL : LEDC ch1 → IO38 (D2 PWM)
 // Directions IN1/IN2 via MCP23017 (PB0-PB3)
 // Courant FB via ADC : IO1 (AZ), IO2 (EL)
 // ════════════════════════════════════════════════════════════════
@@ -13,7 +13,7 @@
 
 #include <Arduino.h>
 
-// Initialise MCPWM (2 timers, 20 kHz) + ADC courant
+// Initialise LEDC PWM (2 canaux, 20 kHz, 8-bit) + ADC courant
 void motorInit();
 
 // Applique un duty cycle (0.0 - 100.0%) sur moteur AZ

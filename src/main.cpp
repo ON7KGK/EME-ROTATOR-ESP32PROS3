@@ -542,16 +542,36 @@ void loop() {
             float dutyAz = 0.0f;
             float dutyEl = 0.0f;
 
-            // AZ
+            // AZ — rampe proportionnelle
             if (fabsf(errAz) > MOT_DEADBAND_DEG) {
                 dirBits |= (errAz > 0) ? MCP_DIR_AZ_CW : MCP_DIR_AZ_CCW;
-                dutyAz = MOT_DEFAULT_DUTY;
+                float t = fminf(fabsf(errAz) / MOT_RAMP_DEG, 1.0f);
+                dutyAz = MOT_MIN_DUTY + t * (MOT_MAX_DUTY - MOT_MIN_DUTY);
             }
 
-            // EL
+            // EL — rampe proportionnelle
             if (fabsf(errEl) > MOT_DEADBAND_DEG) {
                 dirBits |= (errEl > 0) ? MCP_DIR_EL_UP : MCP_DIR_EL_DOWN;
-                dutyEl = MOT_DEFAULT_DUTY;
+                float t = fminf(fabsf(errEl) / MOT_RAMP_DEG, 1.0f);
+                dutyEl = MOT_MIN_DUTY + t * (MOT_MAX_DUTY - MOT_MIN_DUTY);
+            }
+
+            // Debug moteur (toutes les 1s = 10 itérations)
+            static uint8_t motDbgCnt = 0;
+            if (++motDbgCnt >= 10) {
+                motDbgCnt = 0;
+                if (dirBits != 0) {
+                    DEBUG_PRINT("[MOT] err AZ=");
+                    DEBUG_PRINT(String(errAz, 1));
+                    DEBUG_PRINT(" EL=");
+                    DEBUG_PRINT(String(errEl, 1));
+                    DEBUG_PRINT(" dir=0x");
+                    DEBUG_PRINT(String(dirBits, HEX));
+                    DEBUG_PRINT(" duty AZ=");
+                    DEBUG_PRINT(String(dutyAz, 0));
+                    DEBUG_PRINT(" EL=");
+                    DEBUG_PRINTLN(String(dutyEl, 0));
+                }
             }
 
             // Direction via MCP23017 (seulement si changée)
@@ -562,6 +582,8 @@ void loop() {
                 mcpSetMotorDir(dirBits);
                 prevDirBits = dirBits;
                 delayMicroseconds(50);  // Laisser le pont H se configurer
+                DEBUG_PRINT("[MOT] Direction changée → 0x");
+                DEBUG_PRINTLN(String(dirBits, HEX));
             }
             #endif
 
