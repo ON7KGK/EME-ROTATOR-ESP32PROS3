@@ -11,6 +11,7 @@
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
 #include "config.h"
+#include "nvs_config.h"
 #include "protocol.h"
 #include "encoder.h"
 
@@ -128,15 +129,23 @@ void task_pid_loop(void *param) {
 
         bool moving = false;
 
-        // ── Position AZ ──
+        // ── Position AZ — sélection runtime via cfg.azEncoder ──
+        if (false) {}  // anchor pour les #if / else if
         #if ENABLE_AZ_HH12
+        else if (cfg.azEncoder == AZ_ENC_HH12) {
             currentAz = hh12ReadAngle(PIN_ENC_AZ_CS, false);
             if (fabsf(currentAz - targetAz) > 0.5f) moving = true;
-        #elif ENABLE_AZ_AS5048A
+        }
+        #endif
+        #if ENABLE_AZ_AS5048A
+        else if (cfg.azEncoder == AZ_ENC_AS5048A) {
             currentAz = as5048aReadAngle();
             if (fabsf(currentAz - targetAz) > 0.5f) moving = true;
-        #elif ENABLE_SIM_POSITION
-        {
+        }
+        #endif
+        #if ENABLE_SIM_POSITION
+        else {
+            // Simulation AZ
             float dt = (float)TASK_PID_PERIOD_MS / 1000.0f;
             float stepAz = SIM_AZ_SPEED * dt;
             if (fabsf(currentAz - targetAz) > 0.01f) {
@@ -150,9 +159,21 @@ void task_pid_loop(void *param) {
         }
         #endif
 
-        // ── Position EL (simulée tant que capteur EL pas actif) ──
-        #if ENABLE_SIM_POSITION && !ENABLE_EL_HWT901B && !ENABLE_EL_HH12
-        {
+        // ── Position EL — sélection runtime via cfg.elSensor ──
+        if (false) {}
+        #if ENABLE_EL_HH12
+        else if (cfg.elSensor == EL_ENC_HH12) {
+            // EL HH-12 (pas encore implémenté)
+        }
+        #endif
+        #if ENABLE_EL_HWT901B
+        else if (cfg.elSensor == EL_ENC_WITMOTION) {
+            // WitMotion RS-485 (pas encore implémenté)
+        }
+        #endif
+        #if ENABLE_SIM_POSITION
+        else {
+            // Simulation EL
             float dt = (float)TASK_PID_PERIOD_MS / 1000.0f;
             float stepEl = SIM_EL_SPEED * dt;
             if (fabsf(currentEl - targetEl) > 0.01f) {
@@ -347,10 +368,23 @@ void setup() {
 
     DEBUG_PRINTLN("");
     DEBUG_PRINTLN("════════════════════════════════════════");
-    DEBUG_PRINTLN("  EME Rotator Controller v7.4");
+    DEBUG_PRINTLN("  EME Rotator Controller v7.5");
     DEBUG_PRINTLN("  ProS3 (ESP32-S3) Dual-Core FreeRTOS");
     DEBUG_PRINTLN("  Protocole : EasyCom II");
     DEBUG_PRINTLN("════════════════════════════════════════");
+
+    // ── NVS Config — charger avant tout module ──
+    // Factory reset : maintenir STOP au boot
+    #if ENABLE_STOP_BUTTON
+    pinMode(PIN_STOP_BUTTON, INPUT_PULLUP);
+    delay(10);
+    if (digitalRead(PIN_STOP_BUTTON) == LOW) {
+        DEBUG_PRINTLN("[CFG] !!! STOP au boot → FACTORY RESET !!!");
+        cfgResetDefaults();
+        cfgSave();
+    }
+    #endif
+    cfgInit();
 
     // ── Scan I2C bus (diagnostic) ──
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, I2C_SPEED);
@@ -394,20 +428,19 @@ void setup() {
 
     // ── OLED SSD1306 128x32 — splash screen 2s ──
     #if ENABLE_OLED
-        oledInit();
+        if (cfg.oledActive) oledInit();
     #endif
 
     // ── MCP23017 I/O expander ──
     #if ENABLE_MCP23017
-        mcpOk = mcpInit();
+        if (cfg.mcp23017Active) mcpOk = mcpInit();
     #endif
 
-    // ── MC33926 moteurs (MCPWM) ──
+    // ── MC33926 moteurs (LEDC PWM) ──
     #if ENABLE_MOTORS
         motorInit();
-        // Directions en brake au démarrage
         #if ENABLE_MCP23017
-            mcpSetMotorDir(MCP_DIR_AZ_BRAKE | MCP_DIR_EL_BRAKE);
+            if (mcpOk) mcpSetMotorDir(MCP_DIR_AZ_BRAKE | MCP_DIR_EL_BRAKE);
         #endif
     #endif
 
@@ -424,38 +457,54 @@ void setup() {
 
     // ── Ethernet ──
     #if ENABLE_ETHERNET
-        networkInit();
-    #else
+        if (cfg.ethernetActive) {
+            networkInit();
+        } else {
+            DEBUG_PRINTLN("[INIT] Ethernet désactivé (NVS)");
+        }
+    #endif
+    #if !ENABLE_ETHERNET
         protocolStateInit(serialState);
         DEBUG_PRINTLN("[INIT] Mode Serial USB (pas d'Ethernet)");
     #endif
 
     // ── RS-485 Modbus master (UART1) ──
     #if ENABLE_RS485
-        rs485Serial.begin(RS485_BAUD, SERIAL_8N1, PIN_RS485_RX, PIN_RS485_TX);
-        modbusNano.begin(NANO_MODBUS_ID, rs485Serial);
-        DEBUG_PRINT("[RS485] UART1 init : TX=IO");
-        DEBUG_PRINT(PIN_RS485_TX);
-        DEBUG_PRINT(" RX=IO");
-        DEBUG_PRINT(PIN_RS485_RX);
-        DEBUG_PRINT(" @ ");
-        DEBUG_PRINT(RS485_BAUD);
-        DEBUG_PRINTLN(" baud");
+    {
+        // Initialiser RS-485 si Nano R4 ou WitMotion actif
+        bool needRS485 = cfg.nanoR4Active;
+        if (cfg.elSensor == EL_ENC_WITMOTION) needRS485 = true;
+        if (needRS485) {
+            rs485Serial.begin(RS485_BAUD, SERIAL_8N1, PIN_RS485_RX, PIN_RS485_TX);
+            if (cfg.nanoR4Active) {
+                modbusNano.begin(NANO_MODBUS_ID, rs485Serial);
+            }
+            DEBUG_PRINT("[RS485] UART1 init : TX=IO");
+            DEBUG_PRINT(PIN_RS485_TX);
+            DEBUG_PRINT(" RX=IO");
+            DEBUG_PRINT(PIN_RS485_RX);
+            DEBUG_PRINT(" @ ");
+            DEBUG_PRINT(RS485_BAUD);
+            DEBUG_PRINTLN(" baud");
+        }
+    }
     #endif
 
     // ── Encodeur HH-12 AZ (SSI bit-bang) ──
     #if ENABLE_AZ_HH12
-        hh12Init();
+        if (cfg.azEncoder == AZ_ENC_HH12) hh12Init();
     #endif
 
     // ── GPS NEO-6M (UART2, 9600 baud) ──
     #if ENABLE_GPS
-        gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
-        DEBUG_PRINT("[GPS] UART2 init : RX=IO");
-        DEBUG_PRINT(PIN_GPS_RX);
-        DEBUG_PRINT(" TX=IO");
-        DEBUG_PRINT(PIN_GPS_TX);
-        DEBUG_PRINTLN(" @ 9600 baud");
+        if (cfg.gpsActive) {
+            gpsSerial.begin(9600, SERIAL_8N1, PIN_GPS_RX, PIN_GPS_TX);
+            DEBUG_PRINT("[GPS] UART2 init : RX=IO");
+            DEBUG_PRINT(PIN_GPS_RX);
+            DEBUG_PRINT(" TX=IO");
+            DEBUG_PRINT(PIN_GPS_TX);
+            DEBUG_PRINTLN(" @ 9600 baud");
+        }
     #endif
 
     // ── Lancer tâche PID sur Core 1 ──
@@ -542,18 +591,18 @@ void loop() {
             float dutyAz = 0.0f;
             float dutyEl = 0.0f;
 
-            // AZ — rampe proportionnelle
-            if (fabsf(errAz) > MOT_DEADBAND_DEG) {
+            // AZ — rampe proportionnelle (paramètres runtime)
+            if (fabsf(errAz) > cfg.motDeadband) {
                 dirBits |= (errAz > 0) ? MCP_DIR_AZ_CW : MCP_DIR_AZ_CCW;
-                float t = fminf(fabsf(errAz) / MOT_RAMP_DEG, 1.0f);
-                dutyAz = MOT_MIN_DUTY + t * (MOT_MAX_DUTY - MOT_MIN_DUTY);
+                float t = fminf(fabsf(errAz) / cfg.motRampDeg, 1.0f);
+                dutyAz = cfg.motMinDuty + t * (cfg.motMaxDuty - cfg.motMinDuty);
             }
 
-            // EL — rampe proportionnelle
-            if (fabsf(errEl) > MOT_DEADBAND_DEG) {
+            // EL — rampe proportionnelle (paramètres runtime)
+            if (fabsf(errEl) > cfg.motDeadband) {
                 dirBits |= (errEl > 0) ? MCP_DIR_EL_UP : MCP_DIR_EL_DOWN;
-                float t = fminf(fabsf(errEl) / MOT_RAMP_DEG, 1.0f);
-                dutyEl = MOT_MIN_DUTY + t * (MOT_MAX_DUTY - MOT_MIN_DUTY);
+                float t = fminf(fabsf(errEl) / cfg.motRampDeg, 1.0f);
+                dutyEl = cfg.motMinDuty + t * (cfg.motMaxDuty - cfg.motMinDuty);
             }
 
             // Debug moteur (toutes les 1s = 10 itérations)
@@ -596,8 +645,9 @@ void loop() {
 
     // ── Traiter communication réseau ou série ──
     #if ENABLE_ETHERNET
-        networkLoop();
-    #else
+        if (cfg.ethernetActive) networkLoop();
+    #endif
+    #if !ENABLE_ETHERNET
         ParsedCommand cmd;
         if (protocolProcessStream(Serial, serialState, cmd)) {
             handleCommand(cmd, Serial);
@@ -606,7 +656,7 @@ void loop() {
 
     // ── Modbus polling Nano R4 (2s) ──
     #if ENABLE_RS485
-    {
+    if (cfg.nanoR4Active) {
         static unsigned long prevModbus = 0;
         unsigned long nowModbus = millis();
         if (nowModbus - prevModbus >= MODBUS_POLL_INTERVAL_MS) {
@@ -637,14 +687,14 @@ void loop() {
 
     // ── GPS : parser NMEA pour détecter le fix ──
     #if ENABLE_GPS
-    while (gpsSerial.available()) {
+    if (cfg.gpsActive) while (gpsSerial.available()) {
         gpsProcessChar(gpsSerial.read());
     }
     #endif
 
     // ── MCP23017 : polling boutons + limites (500ms diagnostic) ──
     #if ENABLE_MCP23017
-    if (mcpOk) {
+    if (mcpOk && cfg.mcp23017Active) {
         static unsigned long prevMcp = 0;
         static uint8_t prevPortA = 0xFF;
         unsigned long nowMcp = millis();
@@ -711,7 +761,7 @@ void loop() {
 
             // ── OLED ──
             #if ENABLE_OLED
-            {
+            if (cfg.oledActive) {
                 char oledStatus[22];
                 if (isStopped) {
                     strcpy(oledStatus, "** STOP **");
@@ -733,8 +783,9 @@ void loop() {
 
             // ── JSON push vers app Windows (port 4534) ──
             #if ENABLE_APP_TCP && ENABLE_ETHERNET
-                appSendStatus(currentAz, currentEl, targetAz, targetEl,
-                              stateStr, isMoving, isStopped, gpsOk, stale);
+                if (cfg.ethernetActive)
+                    appSendStatus(currentAz, currentEl, targetAz, targetEl,
+                                  stateStr, isMoving, isStopped, gpsOk, stale);
             #endif
         }
     }

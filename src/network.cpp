@@ -19,6 +19,7 @@
 
 #if ENABLE_APP_TCP
   #include <ArduinoJson.h>
+  #include "nvs_config.h"
 #endif
 
 // Wrapper pour contourner l'incompatibilité entre le Server ESP32
@@ -204,9 +205,58 @@ static void handleTcpClient(W5500Server &server, EthernetClient &client,
 
 #if ENABLE_APP_TCP
 
-#define APP_JSON_BUF_SIZE 256
+#define APP_JSON_BUF_SIZE 512
 static char appJsonBuf[APP_JSON_BUF_SIZE];
-static uint8_t appJsonIdx = 0;
+static uint16_t appJsonIdx = 0;
+
+// ── Envoyer la config au client app ──
+static void appSendConfig() {
+    if (!appClient || !appClient.connected()) return;
+
+    const char *azNames[] = {"sim", "hh12", "as5048a"};
+    const char *elNames[] = {"sim", "hh12", "witmotion", "as5048a"};
+
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"type\":\"config\","
+        "\"mot_max_duty\":%.1f,"
+        "\"mot_min_duty\":%.1f,"
+        "\"mot_ramp_deg\":%.1f,"
+        "\"mot_deadband\":%.1f,"
+        "\"oled\":%s,"
+        "\"ethernet\":%s,"
+        "\"gps\":%s,"
+        "\"mcp23017\":%s,"
+        "\"nano_r4\":%s,"
+        "\"az_encoder\":\"%s\","
+        "\"el_sensor\":\"%s\"}\n",
+        cfg.motMaxDuty, cfg.motMinDuty, cfg.motRampDeg, cfg.motDeadband,
+        cfg.oledActive ? "true" : "false",
+        cfg.ethernetActive ? "true" : "false",
+        cfg.gpsActive ? "true" : "false",
+        cfg.mcp23017Active ? "true" : "false",
+        cfg.nanoR4Active ? "true" : "false",
+        azNames[cfg.azEncoder],
+        elNames[cfg.elSensor]);
+    appClient.write((const uint8_t*)buf, n);
+}
+
+// ── Parse encodeur AZ depuis string JSON ──
+static bool parseAzEncoder(const char *s, AzEncoderType &out) {
+    if (strcmp(s, "sim") == 0)     { out = AZ_ENC_SIM;     return true; }
+    if (strcmp(s, "hh12") == 0)    { out = AZ_ENC_HH12;    return true; }
+    if (strcmp(s, "as5048a") == 0) { out = AZ_ENC_AS5048A;  return true; }
+    return false;
+}
+
+// ── Parse capteur EL depuis string JSON ──
+static bool parseElSensor(const char *s, ElSensorType &out) {
+    if (strcmp(s, "sim") == 0)       { out = EL_ENC_SIM;       return true; }
+    if (strcmp(s, "hh12") == 0)      { out = EL_ENC_HH12;      return true; }
+    if (strcmp(s, "witmotion") == 0)  { out = EL_ENC_WITMOTION; return true; }
+    if (strcmp(s, "as5048a") == 0)   { out = EL_ENC_AS5048A;    return true; }
+    return false;
+}
 
 // Parse une ligne JSON reçue du client app et exécute la commande
 static void appParseLine(const char *line) {
@@ -221,6 +271,7 @@ static void appParseLine(const char *line) {
     const char *cmd = doc["cmd"];
     if (!cmd) return;
 
+    // ── Commandes de contrôle rotor ──
     ParsedCommand parsed;
     parsed.cmd = CMD_NONE;
     parsed.az = 0;
@@ -242,6 +293,67 @@ static void appParseLine(const char *line) {
         }
     } else if (strcmp(cmd, "jog_stop") == 0) {
         parsed.cmd = CMD_STOP_ALL;
+    }
+    // ── Commandes de configuration ──
+    else if (strcmp(cmd, "get_config") == 0) {
+        appSendConfig();
+        return;
+    }
+    else if (strcmp(cmd, "set_config") == 0) {
+        bool reboot = false;
+
+        // Moteur (hot)
+        if (doc.containsKey("mot_max_duty"))  cfg.motMaxDuty  = doc["mot_max_duty"];
+        if (doc.containsKey("mot_min_duty"))  cfg.motMinDuty  = doc["mot_min_duty"];
+        if (doc.containsKey("mot_ramp_deg"))  cfg.motRampDeg  = doc["mot_ramp_deg"];
+        if (doc.containsKey("mot_deadband"))  cfg.motDeadband = doc["mot_deadband"];
+
+        // Modules (reboot)
+        if (doc.containsKey("oled"))     { cfg.oledActive     = doc["oled"];     reboot = true; }
+        if (doc.containsKey("ethernet")) { cfg.ethernetActive = doc["ethernet"]; reboot = true; }
+        if (doc.containsKey("gps"))      { cfg.gpsActive      = doc["gps"];      reboot = true; }
+        if (doc.containsKey("mcp23017")) { cfg.mcp23017Active = doc["mcp23017"]; reboot = true; }
+        if (doc.containsKey("nano_r4"))  { cfg.nanoR4Active   = doc["nano_r4"];  reboot = true; }
+
+        // Encodeurs (reboot)
+        if (doc.containsKey("az_encoder")) {
+            AzEncoderType az;
+            if (parseAzEncoder(doc["az_encoder"], az)) { cfg.azEncoder = az; reboot = true; }
+        }
+        if (doc.containsKey("el_sensor")) {
+            ElSensorType el;
+            if (parseElSensor(doc["el_sensor"], el)) { cfg.elSensor = el; reboot = true; }
+        }
+
+        // Clamp moteur
+        if (cfg.motMaxDuty < 10.0f)  cfg.motMaxDuty = 10.0f;
+        if (cfg.motMaxDuty > 100.0f) cfg.motMaxDuty = 100.0f;
+        if (cfg.motMinDuty < 5.0f)   cfg.motMinDuty = 5.0f;
+        if (cfg.motMinDuty > cfg.motMaxDuty) cfg.motMinDuty = cfg.motMaxDuty;
+        if (cfg.motRampDeg < 1.0f)   cfg.motRampDeg = 1.0f;
+        if (cfg.motDeadband < 0.1f)  cfg.motDeadband = 0.1f;
+
+        char ack[64];
+        snprintf(ack, sizeof(ack),
+            "{\"type\":\"config_ack\",\"reboot\":%s}\n",
+            reboot ? "true" : "false");
+        appClient.write((const uint8_t*)ack, strlen(ack));
+        DEBUG_PRINTLN("[APP] Config modifiée");
+        return;
+    }
+    else if (strcmp(cmd, "save_config") == 0) {
+        cfgSave();
+        const char *r = "{\"type\":\"config_saved\"}\n";
+        appClient.write((const uint8_t*)r, strlen(r));
+        return;
+    }
+    else if (strcmp(cmd, "reset_config") == 0) {
+        cfgResetDefaults();
+        cfgSave();
+        const char *r = "{\"type\":\"config_reset\"}\n";
+        appClient.write((const uint8_t*)r, strlen(r));
+        appSendConfig();
+        return;
     }
 
     if (parsed.cmd != CMD_NONE) {

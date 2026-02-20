@@ -56,7 +56,7 @@
 
 // ── STOCKAGE ──
 #define ENABLE_EEPROM         1   // EEPROM/FRAM position (double buffering + CRC) — ✅ TESTÉ I2C
-#define ENABLE_NVS_CONFIG     0   // NVS configuration persistante
+#define ENABLE_NVS_CONFIG     1   // NVS configuration persistante (runtime via JSON) — ✅ ACTIF
 
 // ── SÉCURITÉ ──
 #define ENABLE_STOP_BUTTON    1   // ISR bouton STOP (recommandé toujours actif)
@@ -71,12 +71,7 @@
 // VALIDATION COMPILE-TIME
 // ═══════════════════════════════════════════════════════════════
 
-#if ENABLE_AZ_AS5048A && ENABLE_AZ_HH12
-  #error "Cannot enable both AS5048A and HH-12 for AZ — choose one!"
-#endif
-#if ENABLE_EL_HWT901B && ENABLE_EL_HH12
-  #error "Cannot enable both HWT901B and HH-12 for EL — choose one!"
-#endif
+// Note : AZ/EL encoder mutual exclusion supprimée — sélection runtime via NVS
 #if ENABLE_MOTORS && !ENABLE_MCP23017
   #error "MOTORS requires MCP23017 (motor direction via I2C)"
 #endif
@@ -89,18 +84,11 @@
 #if ENABLE_HWT901B_BUS && !ENABLE_RS485
   #error "HWT901B Modbus requires RS485"
 #endif
-#if ENABLE_NANO_R4 && !ENABLE_RS485
-  #error "Nano R4 Modbus requires RS485"
-#endif
 #if ENABLE_SOLAR_CAL && !ENABLE_GPS
   #error "Solar calibration requires GPS (UTC time for ephemeris)"
 #endif
 #if ENABLE_AZELDAT && !ENABLE_APP_TCP
   #error "AZELDAT autonomous mode requires APP_TCP (JSON port 4534)"
-#endif
-#if ENABLE_SIM_POSITION && (ENABLE_AZ_AS5048A || ENABLE_AZ_HH12) \
-                        && (ENABLE_EL_HWT901B || ENABLE_EL_HH12)
-  #warning "SIM_POSITION enabled with real encoders — sim will be ignored"
 #endif
 
 // ═══════════════════════════════════════════════════════════════
