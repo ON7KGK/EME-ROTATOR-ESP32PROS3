@@ -1,0 +1,176 @@
+// ════════════════════════════════════════════════════════════════
+// EME ROTATOR — Sécurités locales (Implementation)
+// ════════════════════════════════════════════════════════════════
+// MCP23017 : GPA0-4 = inputs (limits + STOP), GPB0-3 = outputs (direction)
+// Interrupt MCP23017 → pin A3 pour détection rapide limits/STOP
+// Watchdog Modbus : 500ms sans commande → arrêt moteurs
+// ════════════════════════════════════════════════════════════════
+
+#include "safety.h"
+#include "config.h"
+#include "motor.h"
+#include "hh12.h"
+#include "modbus_regs.h"
+#include <Adafruit_MCP23X17.h>
+
+// ════════════════════════════════════════════════════════════════
+// MCP23017 — instance globale (partagée avec motor.cpp)
+// ════════════════════════════════════════════════════════════════
+
+Adafruit_MCP23X17 mcp;
+
+// ════════════════════════════════════════════════════════════════
+// VARIABLES GLOBALES
+// ════════════════════════════════════════════════════════════════
+
+bool limitCW = false;
+bool limitCCW = false;
+bool limitUP = false;
+bool limitDOWN = false;
+bool stopActive = false;
+bool sfFault = false;
+bool fbOvercurrent = false;
+uint16_t safetyStatus = 0;
+
+static unsigned long lastModbusCommand = 0;
+static bool watchdogArmed = false;  // Armé après la première commande
+
+// ════════════════════════════════════════════════════════════════
+// INITIALISATION
+// ════════════════════════════════════════════════════════════════
+
+void safetyInit() {
+    // Initialiser le MCP23017
+    if (!mcp.begin_I2C(I2C_ADDR_MCP23017)) {
+        DEBUG_PRINTLN("ERREUR: MCP23017 non détecté !");
+        // Continuer quand même — les moteurs seront bloqués par l'absence de direction
+        return;
+    }
+
+    // Port A = Inputs avec pull-up (limits + STOP)
+    mcp.pinMode(MCP_LIMIT_CW, INPUT_PULLUP);
+    mcp.pinMode(MCP_LIMIT_CCW, INPUT_PULLUP);
+    mcp.pinMode(MCP_LIMIT_UP, INPUT_PULLUP);
+    mcp.pinMode(MCP_LIMIT_DOWN, INPUT_PULLUP);
+    mcp.pinMode(MCP_STOP_BUTTON, INPUT_PULLUP);
+
+    // Configurer MCP23017 interrupt-on-change pour port A
+    // Toutes les entrées GPA0-4 déclenchent une interruption
+    mcp.setupInterrupts(true, false, LOW);  // Mirror, open-drain=false, polarity=LOW
+    mcp.setupInterruptPin(MCP_LIMIT_CW, CHANGE);
+    mcp.setupInterruptPin(MCP_LIMIT_CCW, CHANGE);
+    mcp.setupInterruptPin(MCP_LIMIT_UP, CHANGE);
+    mcp.setupInterruptPin(MCP_LIMIT_DOWN, CHANGE);
+    mcp.setupInterruptPin(MCP_STOP_BUTTON, CHANGE);
+
+    // Pin interrupt MCP23017 → UNO R4
+    pinMode(PIN_MCP_INT, INPUT_PULLUP);
+
+    // Lecture initiale pour effacer les interrupts pendants
+    mcp.readGPIOA();
+
+    DEBUG_PRINTLN("MCP23017 initialisé (limits + STOP + direction)");
+
+    // Lecture initiale des sécurités
+    safetyUpdate();
+
+    DEBUG_PRINT("État initial : limits=");
+    DEBUG_PRINT(limitCW); DEBUG_PRINT(limitCCW);
+    DEBUG_PRINT(limitUP); DEBUG_PRINT(limitDOWN);
+    DEBUG_PRINT(" STOP="); DEBUG_PRINTLN(stopActive);
+}
+
+// ════════════════════════════════════════════════════════════════
+// MISE À JOUR DES FLAGS
+// ════════════════════════════════════════════════════════════════
+
+void safetyUpdate() {
+    // Lire le port A du MCP23017 (limits + STOP)
+    // Logique : capteur actif = LOW (via optocoupler/pull-up)
+    uint8_t portA = mcp.readGPIOA();
+
+    limitCW   = !(portA & (1 << MCP_LIMIT_CW));    // LOW = atteint
+    limitCCW  = !(portA & (1 << MCP_LIMIT_CCW));
+    limitUP   = !(portA & (1 << MCP_LIMIT_UP));
+    limitDOWN = !(portA & (1 << MCP_LIMIT_DOWN));
+    stopActive = !(portA & (1 << MCP_STOP_BUTTON));  // NF ouvert = HIGH → pressé
+
+    // Status flag MC33926 (pin directe)
+    sfFault = motorReadSF();
+
+    // Overcurrent (depuis motor.cpp)
+    fbOvercurrent = (motorCurrentAz > CURRENT_EMERGENCY) ||
+                    (motorCurrentEl > CURRENT_EMERGENCY);
+
+    // Construire le bitmap STATUS pour Modbus
+    safetyStatus = 0;
+    if (limitCW)      safetyStatus |= STATUS_LIMIT_CW;
+    if (limitCCW)     safetyStatus |= STATUS_LIMIT_CCW;
+    if (limitUP)      safetyStatus |= STATUS_LIMIT_UP;
+    if (limitDOWN)    safetyStatus |= STATUS_LIMIT_DOWN;
+    if (stopActive)   safetyStatus |= STATUS_STOP_ACTIVE;
+    if (sfFault)      safetyStatus |= STATUS_SF_FAULT;
+    if (fbOvercurrent) safetyStatus |= STATUS_FB_OVERCURRENT;
+    if (hh12AzOk)     safetyStatus |= STATUS_HH12_AZ_OK;
+    if (hh12ElOk)     safetyStatus |= STATUS_HH12_EL_OK;
+}
+
+// ════════════════════════════════════════════════════════════════
+// APPLICATION DES SÉCURITÉS
+// ════════════════════════════════════════════════════════════════
+
+void safetyApply(int16_t &dutyAz, int16_t &dutyEl) {
+    // 1. Watchdog Modbus
+    if (safetyWatchdogExpired()) {
+        dutyAz = 0;
+        dutyEl = 0;
+        return;
+    }
+
+    // 2. STOP pressé → arrêt total
+    if (stopActive) {
+        dutyAz = 0;
+        dutyEl = 0;
+        return;
+    }
+
+    // 3. SF fault → arrêt total
+    if (sfFault) {
+        dutyAz = 0;
+        dutyEl = 0;
+        return;
+    }
+
+    // 4. Overcurrent → arrêt total
+    if (fbOvercurrent) {
+        dutyAz = 0;
+        dutyEl = 0;
+        return;
+    }
+
+    // 5. Limits directionnels (bloque la direction, autorise l'inverse)
+    if (limitCW && dutyAz > 0)   dutyAz = 0;  // CW bloqué, CCW autorisé
+    if (limitCCW && dutyAz < 0)  dutyAz = 0;  // CCW bloqué, CW autorisé
+    if (limitUP && dutyEl > 0)   dutyEl = 0;   // UP bloqué, DOWN autorisé
+    if (limitDOWN && dutyEl < 0) dutyEl = 0;   // DOWN bloqué, UP autorisé
+}
+
+// ════════════════════════════════════════════════════════════════
+// WATCHDOG MODBUS
+// ════════════════════════════════════════════════════════════════
+
+void safetyResetWatchdog() {
+    lastModbusCommand = millis();
+    watchdogArmed = true;
+}
+
+bool safetyWatchdogExpired() {
+    if (!watchdogArmed) return false;  // Pas encore de commande reçue
+    return (millis() - lastModbusCommand > MODBUS_WATCHDOG_MS);
+}
+
+void safetyClearFaults() {
+    sfFault = false;
+    fbOvercurrent = false;
+    DEBUG_PRINTLN("Faults cleared");
+}

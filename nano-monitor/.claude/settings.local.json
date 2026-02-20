@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)",
+      "Bash(/c/Users/on7kg/AppData/Local/Programs/Python/Python313/Scripts/pio:*)",
+      "Bash(python:*)"
+    ]
+  }
+}

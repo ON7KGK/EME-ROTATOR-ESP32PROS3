@@ -1,3 +1,11 @@
+// ════════════════════════════════════════════════════════════════
+// EME ROTATOR CONTROLLER — Protocole EasyCom II
+// ════════════════════════════════════════════════════════════════
+// Format position : AZxxx.x ELxxx.x (1 décimale)
+// Supporte les décimales (contrairement à GS-232B)
+// Compatible PSTRotator, HRD, N1MM, etc.
+// ════════════════════════════════════════════════════════════════
+
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
@@ -6,9 +14,9 @@
 // Types de commandes reçues par le parser
 typedef enum {
     CMD_NONE,           // Pas de commande (ligne vide ou incomplète)
-    CMD_QUERY_POS,      // Demande de position AZ+EL (GS-232B C2)
-    CMD_QUERY_AZ,       // Demande azimut seul (EasyCom "AZ")
-    CMD_QUERY_EL,       // Demande élévation seule (EasyCom "EL")
+    CMD_QUERY_POS,      // Demande de position AZ+EL
+    CMD_QUERY_AZ,       // Demande azimut seul
+    CMD_QUERY_EL,       // Demande élévation seule
     CMD_GOTO_AZ,        // Aller à un azimut cible
     CMD_GOTO_EL,        // Aller à une élévation cible
     CMD_GOTO_AZEL,      // Aller à un azimut + élévation cible
@@ -27,7 +35,7 @@ typedef enum {
 typedef struct {
     ProtocolCommand cmd;
     float az;           // Azimut cible (si CMD_GOTO_AZ ou CMD_GOTO_AZEL)
-    float el;           // Élévation cible (si CMD_GOTO_AZEL)
+    float el;           // Élévation cible (si CMD_GOTO_EL ou CMD_GOTO_AZEL)
 } ParsedCommand;
 
 // État du parser pour un flux donné (Serial, TCP client, etc.)
@@ -49,18 +57,10 @@ void protocolInit();
 bool protocolProcessStream(Stream &input, ProtocolState &state, ParsedCommand &result);
 
 // Envoie la réponse de position AZ+EL sur le Stream de sortie
+// Format : AZxxx.x ELxxx.x\r\n
 void protocolSendPosition(Stream &output, float az, float el);
-
-// Envoie la réponse azimut seul (EasyCom)
-void protocolSendAzimuth(Stream &output, float az);
-
-// Envoie la réponse élévation seule (EasyCom)
-void protocolSendElevation(Stream &output, float el);
 
 // Envoie la réponse de version sur le Stream de sortie
 void protocolSendVersion(Stream &output);
-
-// Retourne le nom du protocole actif ("GS-232B" ou "EasyCom II")
-const char* protocolGetName();
 
 #endif

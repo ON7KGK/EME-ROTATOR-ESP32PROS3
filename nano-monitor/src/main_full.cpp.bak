@@ -1,0 +1,196 @@
+// ════════════════════════════════════════════════════════════════
+// EME ROTATOR — UNO R4 Motor Box (main.cpp)
+// ════════════════════════════════════════════════════════════════
+// Arduino UNO R4 Minima (Renesas RA4M1, Cortex-M4 @ 48 MHz)
+// Rôle : contrôle moteur + lecture encodeurs + sécurités locales
+// Communication : Modbus RTU slave (ID 2) via RS-485 (Serial1)
+// ════════════════════════════════════════════════════════════════
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <ModbusRTUSlave.h>
+
+#include "config.h"
+#include "modbus_regs.h"
+#include "hh12.h"
+#include "hall.h"
+#include "motor.h"
+#include "safety.h"
+
+// ════════════════════════════════════════════════════════════════
+// MODBUS
+// ════════════════════════════════════════════════════════════════
+
+ModbusRTUSlave modbus(Serial1);
+
+// Tableaux de registres Modbus
+uint16_t inputRegs[NUM_INPUT_REGS];
+uint16_t holdingRegs[NUM_HOLDING_REGS];
+
+// Duty cycles demandés par le master (depuis holding registers)
+int16_t requestedDutyAz = 0;
+int16_t requestedDutyEl = 0;
+
+// ════════════════════════════════════════════════════════════════
+// TIMING
+// ════════════════════════════════════════════════════════════════
+
+static unsigned long lastSafetyCheck = 0;
+static unsigned long lastMotorUpdate = 0;
+static unsigned long loopStartTime = 0;
+static uint16_t loopTimeUs = 0;
+
+// ════════════════════════════════════════════════════════════════
+// MISE À JOUR DES INPUT REGISTERS
+// ════════════════════════════════════════════════════════════════
+
+void updateInputRegisters() {
+    // HH-12
+    inputRegs[IREG_HH12_AZ_RAW] = (uint16_t)hh12RawAz;
+    inputRegs[IREG_HH12_EL_RAW] = (uint16_t)hh12RawEl;
+    inputRegs[IREG_HH12_AZ_ANGLE_X10] = hh12AngleAzX10;
+    inputRegs[IREG_HH12_EL_ANGLE_X10] = hh12AngleElX10;
+
+    // Hall (32-bit split en 2 registres 16-bit)
+    int32_t azCount = hallGetCountAz();
+    int32_t elCount = hallGetCountEl();
+    inputRegs[IREG_HALL_AZ_HI] = (uint16_t)((uint32_t)azCount >> 16);
+    inputRegs[IREG_HALL_AZ_LO] = (uint16_t)((uint32_t)azCount & 0xFFFF);
+    inputRegs[IREG_HALL_EL_HI] = (uint16_t)((uint32_t)elCount >> 16);
+    inputRegs[IREG_HALL_EL_LO] = (uint16_t)((uint32_t)elCount & 0xFFFF);
+
+    // Current feedback
+    inputRegs[IREG_MOT_AZ_FB_RAW] = motorFbRawAz;
+    inputRegs[IREG_MOT_EL_FB_RAW] = motorFbRawEl;
+
+    // Status bitmap
+    inputRegs[IREG_STATUS] = safetyStatus;
+
+    // Loop time
+    inputRegs[IREG_LOOP_TIME_US] = loopTimeUs;
+}
+
+// ════════════════════════════════════════════════════════════════
+// TRAITEMENT DES HOLDING REGISTERS (commandes du master)
+// ════════════════════════════════════════════════════════════════
+
+void processHoldingRegisters() {
+    // Lire les duty cycles demandés
+    requestedDutyAz = (int16_t)holdingRegs[HREG_MOT_AZ_DUTY];
+    requestedDutyEl = (int16_t)holdingRegs[HREG_MOT_EL_DUTY];
+
+    // Traiter les commandes
+    uint16_t cmd = holdingRegs[HREG_CMD];
+    if (cmd != CMD_NONE) {
+        switch (cmd) {
+            case CMD_RESET_HALL:
+                hallResetCounts();
+                break;
+
+            case CMD_CLEAR_FAULT:
+                safetyClearFaults();
+                break;
+
+            case CMD_APPLY_PRESET: {
+                int32_t presetAz = ((int32_t)holdingRegs[HREG_HALL_PRESET_AZ_HI] << 16) |
+                                    holdingRegs[HREG_HALL_PRESET_AZ_LO];
+                int32_t presetEl = ((int32_t)holdingRegs[HREG_HALL_PRESET_EL_HI] << 16) |
+                                    holdingRegs[HREG_HALL_PRESET_EL_LO];
+                hallSetCountAz(presetAz);
+                hallSetCountEl(presetEl);
+                DEBUG_PRINT("Hall preset AZ="); DEBUG_PRINT(presetAz);
+                DEBUG_PRINT(" EL="); DEBUG_PRINTLN(presetEl);
+                break;
+            }
+
+            case CMD_EMERGENCY_STOP:
+                motorStop();
+                DEBUG_PRINTLN("EMERGENCY STOP via Modbus");
+                break;
+        }
+
+        // Effacer la commande après traitement
+        holdingRegs[HREG_CMD] = CMD_NONE;
+    }
+
+    // Reset du watchdog Modbus (commande reçue = communication OK)
+    safetyResetWatchdog();
+}
+
+// ════════════════════════════════════════════════════════════════
+// SETUP
+// ════════════════════════════════════════════════════════════════
+
+void setup() {
+    // Debug via USB (Serial0)
+    Serial.begin(115200);
+    while (!Serial && millis() < 3000);  // Timeout 3s pour USB
+    DEBUG_PRINTLN("");
+    DEBUG_PRINTLN("════════════════════════════════════════");
+    DEBUG_PRINTLN("  EME ROTATOR — UNO R4 Motor Box");
+    DEBUG_PRINTLN("════════════════════════════════════════");
+
+    // I2C pour MCP23017
+    Wire.begin();
+
+    // Initialiser les modules dans l'ordre
+    safetyInit();   // MCP23017 (doit être avant motorInit)
+    motorInit();    // PWM + direction + feedback
+    hh12Init();     // Encodeurs SSI
+    hallInit();     // Encodeurs quadrature
+
+    // Initialiser les registres Modbus à zéro
+    memset(inputRegs, 0, sizeof(inputRegs));
+    memset(holdingRegs, 0, sizeof(holdingRegs));
+
+    // Configurer Modbus RTU slave sur Serial1
+    Serial1.begin(RS485_BAUD);
+    modbus.configureInputRegisters(inputRegs, NUM_INPUT_REGS);
+    modbus.configureHoldingRegisters(holdingRegs, NUM_HOLDING_REGS);
+    modbus.begin(MODBUS_SLAVE_ID, RS485_BAUD);
+
+    DEBUG_PRINT("Modbus slave ID="); DEBUG_PRINT(MODBUS_SLAVE_ID);
+    DEBUG_PRINT(" baud="); DEBUG_PRINTLN(RS485_BAUD);
+    DEBUG_PRINTLN("════════════════════════════════════════");
+    DEBUG_PRINTLN("Prêt.");
+}
+
+// ════════════════════════════════════════════════════════════════
+// LOOP
+// ════════════════════════════════════════════════════════════════
+
+void loop() {
+    loopStartTime = micros();
+
+    // ─── 1. Modbus : traiter les requêtes du master ───
+    modbus.poll();
+
+    // ─── 2. Encodeurs ───
+    hh12Update();
+    // Hall : mis à jour par interrupts (pas de poll nécessaire)
+
+    // ─── 3. Feedback moteur ───
+    motorUpdateFeedback();
+
+    // ─── 4. Sécurités (toutes les SAFETY_CHECK_INTERVAL ms) ───
+    unsigned long now = millis();
+    if (now - lastSafetyCheck >= SAFETY_CHECK_INTERVAL) {
+        lastSafetyCheck = now;
+        safetyUpdate();
+    }
+
+    // ─── 5. Appliquer les commandes moteur avec sécurités ───
+    // Traiter les holding registers si mis à jour
+    processHoldingRegisters();
+
+    int16_t dutyAz = requestedDutyAz;
+    int16_t dutyEl = requestedDutyEl;
+    safetyApply(dutyAz, dutyEl);
+    motorSetDuty(dutyAz, dutyEl);
+
+    // ─── 6. Mettre à jour les input registers ───
+    updateInputRegisters();
+
+    // ─── 7. Mesurer le temps de boucle ───
+    loopTimeUs = (uint16_t)(micros() - loopStartTime);
+}

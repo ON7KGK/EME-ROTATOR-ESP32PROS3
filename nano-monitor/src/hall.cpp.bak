@@ -1,0 +1,125 @@
+// ════════════════════════════════════════════════════════════════
+// EME ROTATOR — Encodeurs Hall quadrature (Implementation)
+// ════════════════════════════════════════════════════════════════
+// Machine d'état quadrature standard sur interrupts CHANGE
+// RA4M1 supporte les interrupts sur toutes les pins digitales
+// ════════════════════════════════════════════════════════════════
+
+#include "hall.h"
+#include "config.h"
+
+// ════════════════════════════════════════════════════════════════
+// VARIABLES GLOBALES
+// ════════════════════════════════════════════════════════════════
+
+volatile int32_t hallCountAz = 0;
+volatile int32_t hallCountEl = 0;
+
+// ════════════════════════════════════════════════════════════════
+// ISR — Quadrature decoding
+// ════════════════════════════════════════════════════════════════
+// Table de transition quadrature (Gray code)
+// État = (A_prev << 1 | B_prev) << 2 | (A_cur << 1 | B_cur)
+// Résultat : +1 (CW), -1 (CCW), 0 (invalide/pas de changement)
+
+static const int8_t quadTable[16] = {
+    0,  // 00→00 : pas de changement
+   +1,  // 00→01 : CW
+   -1,  // 00→10 : CCW
+    0,  // 00→11 : invalide (saut)
+   -1,  // 01→00 : CCW
+    0,  // 01→01 : pas de changement
+    0,  // 01→10 : invalide (saut)
+   +1,  // 01→11 : CW
+   +1,  // 10→00 : CW
+    0,  // 10→01 : invalide (saut)
+    0,  // 10→10 : pas de changement
+   -1,  // 10→11 : CCW
+    0,  // 11→00 : invalide (saut)
+   -1,  // 11→01 : CCW
+   +1,  // 11→10 : CW
+    0   // 11→11 : pas de changement
+};
+
+static volatile uint8_t prevStateAz = 0;
+static volatile uint8_t prevStateEl = 0;
+
+static void isrHallAz() {
+    uint8_t a = digitalRead(PIN_HALL_AZ_A);
+    uint8_t b = digitalRead(PIN_HALL_AZ_B);
+    uint8_t curState = (a << 1) | b;
+    uint8_t idx = (prevStateAz << 2) | curState;
+    hallCountAz += quadTable[idx];
+    prevStateAz = curState;
+}
+
+static void isrHallEl() {
+    uint8_t a = digitalRead(PIN_HALL_EL_A);
+    uint8_t b = digitalRead(PIN_HALL_EL_B);
+    uint8_t curState = (a << 1) | b;
+    uint8_t idx = (prevStateEl << 2) | curState;
+    hallCountEl += quadTable[idx];
+    prevStateEl = curState;
+}
+
+// ════════════════════════════════════════════════════════════════
+// INITIALISATION
+// ════════════════════════════════════════════════════════════════
+
+void hallInit() {
+    // Configurer les pins en entrée
+    pinMode(PIN_HALL_AZ_A, INPUT);
+    pinMode(PIN_HALL_AZ_B, INPUT);
+    pinMode(PIN_HALL_EL_A, INPUT);
+    pinMode(PIN_HALL_EL_B, INPUT);
+
+    // Lire l'état initial
+    prevStateAz = (digitalRead(PIN_HALL_AZ_A) << 1) | digitalRead(PIN_HALL_AZ_B);
+    prevStateEl = (digitalRead(PIN_HALL_EL_A) << 1) | digitalRead(PIN_HALL_EL_B);
+
+    // Attacher les interrupts (CHANGE sur les 4 signaux)
+    attachInterrupt(digitalPinToInterrupt(PIN_HALL_AZ_A), isrHallAz, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(PIN_HALL_AZ_B), isrHallAz, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(PIN_HALL_EL_A), isrHallEl, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(PIN_HALL_EL_B), isrHallEl, CHANGE);
+
+    DEBUG_PRINTLN("Hall encodeurs initialisés (4× interrupt CHANGE)");
+}
+
+// ════════════════════════════════════════════════════════════════
+// ACCÈS ATOMIQUE AUX COMPTEURS
+// ════════════════════════════════════════════════════════════════
+
+int32_t hallGetCountAz() {
+    noInterrupts();
+    int32_t val = hallCountAz;
+    interrupts();
+    return val;
+}
+
+int32_t hallGetCountEl() {
+    noInterrupts();
+    int32_t val = hallCountEl;
+    interrupts();
+    return val;
+}
+
+void hallSetCountAz(int32_t value) {
+    noInterrupts();
+    hallCountAz = value;
+    interrupts();
+}
+
+void hallSetCountEl(int32_t value) {
+    noInterrupts();
+    hallCountEl = value;
+    interrupts();
+}
+
+void hallResetCounts() {
+    noInterrupts();
+    hallCountAz = 0;
+    hallCountEl = 0;
+    interrupts();
+    DEBUG_PRINTLN("Compteurs Hall remis à zéro");
+}

@@ -25,4 +25,13 @@ bool networkIsConnected();
 // Retourne l'adresse IP sous forme de String (pour debug/OLED)
 String networkGetIP();
 
+// Retourne true si un client est connecté sur le port app (4534)
+bool appTcpConnected();
+
+// Envoie un JSON status push au client app connecté
+// Appelé depuis loop() toutes les 500ms
+void appSendStatus(float az, float el, float tgtAz, float tgtEl,
+                   const char *state, bool moving, bool stopBtn,
+                   bool gpsFix, bool stale);
+
 #endif // NETWORK_H

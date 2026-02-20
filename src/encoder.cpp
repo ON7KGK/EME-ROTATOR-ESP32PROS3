@@ -1,164 +1,119 @@
 // ════════════════════════════════════════════════════════════════
-// EME ROTATOR CONTROLLER — Encodeurs HH-12 SSI (Implementation)
+// EME ROTATOR CONTROLLER — Module Encodeurs (Implementation)
 // ════════════════════════════════════════════════════════════════
-// AZ : HH-12 absolu sur axe final — mapping direct 0-4095 = 0-360°
-// EL : HH-12 absolu sur axe final — mapping direct 0-4095 = 0-90°
-// Pas de multi-tours, pas de calibration, pas d'EEPROM
+// Phase 1 : tous les encodeurs désactivés (ENABLE_SIM_POSITION = 1)
+// Phase 4a : AS5048A AZ (SPI bit-bang, IO35/IO36/IO37)
+// Phase 4b : Hall AZ PCNT (IO3/IO4)
+// Legacy   : HH-12 AZ SSI (mêmes pins que AS5048A)
 // ════════════════════════════════════════════════════════════════
 
 #include "encoder.h"
 
 // ════════════════════════════════════════════════════════════════
-// VARIABLES GLOBALES
+// AS5048A — SPI bit-bang Mode 1 (CPOL=0, CPHA=1), 500 kHz
 // ════════════════════════════════════════════════════════════════
 
-float currentAz = 0.0f;
-float currentEl = 0.0f;
+#if ENABLE_AZ_AS5048A
 
-int rawCountsAz = 0;
-int rawCountsEl = 0;
-
-// Throttle lecture
-static unsigned long lastEncoderReadTime = 0;
-
-// ════════════════════════════════════════════════════════════════
-// VARIABLES SIMULATION (si SIMULATE_ENCODERS == 1)
-// ════════════════════════════════════════════════════════════════
-
-#if SIMULATE_ENCODERS
-    // targetAz/targetEl sont définis dans main.cpp
-    extern float targetAz;
-    extern float targetEl;
-#endif
-
-// ════════════════════════════════════════════════════════════════
-// INITIALISATION
-// ════════════════════════════════════════════════════════════════
-
-void setupEncoders() {
-    #if !SIMULATE_ENCODERS
-        // Configuration pins SSI (bit-bang)
-        pinMode(PIN_HH12_SCLK, OUTPUT);
-        pinMode(PIN_HH12_MISO, INPUT);
-        pinMode(PIN_HH12_CS_AZ, OUTPUT);
-        pinMode(PIN_HH12_CS_EL, OUTPUT);
-
-        // État repos : CLK et CS à HIGH
-        digitalWrite(PIN_HH12_SCLK, HIGH);
-        digitalWrite(PIN_HH12_CS_AZ, HIGH);
-        digitalWrite(PIN_HH12_CS_EL, HIGH);
-    #endif
-
-    #if !SIMULATE_ENCODERS
-        // Première lecture position
-        delay(10);
-        rawCountsAz = readSSI(PIN_HH12_CS_AZ, REVERSE_AZ);
-        rawCountsEl = readSSI(PIN_HH12_CS_EL, REVERSE_EL);
-
-        // AZ : mapping direct 0-4095 → 0-360°
-        currentAz = (float)rawCountsAz * 360.0f / 4096.0f;
-
-        // EL : mapping direct 0-4095 → 0-360° (limité ensuite par EL_MIN/EL_MAX)
-        currentEl = (float)rawCountsEl * 360.0f / 4096.0f;
-    #else
-        // Simulation : position initiale au centre
-        currentAz = 180.0f;
-        currentEl = 45.0f;
-    #endif
-
-    DEBUG_PRINTLN("=== ENCODEURS INITIALISÉS ===");
-    #if SIMULATE_ENCODERS
-        DEBUG_PRINTLN("Mode : SIMULATION");
-    #else
-        DEBUG_PRINTLN("AZ : HH-12 absolu (direct sur axe)");
-        DEBUG_PRINTLN("EL : HH-12 absolu (direct sur axe)");
-    #endif
-    DEBUG_PRINT("Position initiale AZ=");
-    DEBUG_PRINT(currentAz);
-    DEBUG_PRINT(" EL=");
-    DEBUG_PRINTLN(currentEl);
+void as5048aInit() {
+    pinMode(PIN_ENC_AZ_CS, OUTPUT);
+    pinMode(PIN_ENC_AZ_CLK, OUTPUT);
+    pinMode(PIN_ENC_AZ_MISO, INPUT);
+    digitalWrite(PIN_ENC_AZ_CS, HIGH);
+    digitalWrite(PIN_ENC_AZ_CLK, LOW);   // CPOL=0, repos LOW
 }
 
-// ════════════════════════════════════════════════════════════════
-// MISE À JOUR POSITION (appelé dans loop)
-// ════════════════════════════════════════════════════════════════
-
-void updateEncoders() {
-    unsigned long now = millis();
-    if (now - lastEncoderReadTime < ENCODER_READ_INTERVAL) {
-        return;
-    }
-    lastEncoderReadTime = now;
-
-    #if SIMULATE_ENCODERS
-        // ─── Simulation de mouvement réaliste ───
-        // Vitesse basée sur le temps réel écoulé (dt en secondes)
-        float dt = (float)ENCODER_READ_INTERVAL / 1000.0f;
-        float stepAz = SIM_AZ_SPEED * dt;  // °/s × s = ° par update
-        float stepEl = SIM_EL_SPEED * dt;
-
-        if (abs(currentAz - targetAz) > 0.01f) {
-            float diff = targetAz - currentAz;
-            if (abs(diff) <= stepAz) {
-                currentAz = targetAz;
-            } else {
-                currentAz += (diff > 0) ? stepAz : -stepAz;
-            }
-            currentAz = constrain(currentAz, AZ_MIN, AZ_MAX);
-        }
-        if (abs(currentEl - targetEl) > 0.01f) {
-            float diff = targetEl - currentEl;
-            if (abs(diff) <= stepEl) {
-                currentEl = targetEl;
-            } else {
-                currentEl += (diff > 0) ? stepEl : -stepEl;
-            }
-            currentEl = constrain(currentEl, EL_MIN, EL_MAX);
-        }
-
-    #else
-        // ═══ AZIMUT : HH-12 absolu, mapping direct ═══
-        rawCountsAz = readSSI(PIN_HH12_CS_AZ, REVERSE_AZ);
-        currentAz = (float)rawCountsAz * 360.0f / 4096.0f;
-
-        // ═══ ÉLÉVATION : HH-12 absolu, mapping direct ═══
-        rawCountsEl = readSSI(PIN_HH12_CS_EL, REVERSE_EL);
-        currentEl = (float)rawCountsEl * 360.0f / 4096.0f;
-    #endif
+int16_t as5048aReadRaw() {
+    // TODO Phase 4a : implémenter lecture SPI pipelined
+    // 1. CS LOW → send 0x3FFF (read angle) → CS HIGH
+    // 2. CS LOW → read 16-bit response → CS HIGH
+    // 3. Check parity (bit 15) and error flag (bit 14)
+    // 4. Return bits[13:0] = angle 0-16383
+    return -1;
 }
 
+float as5048aReadAngle() {
+    int16_t raw = as5048aReadRaw();
+    if (raw < 0) return -1.0f;
+    return (float)raw * 360.0f / 16384.0f;
+}
+
+#endif // ENABLE_AZ_AS5048A
+
 // ════════════════════════════════════════════════════════════════
-// LECTURE SSI (bit-bang, protocole HH-12)
+// HH-12 — SSI bit-bang 12-bit (legacy/fallback)
 // ════════════════════════════════════════════════════════════════
 
-int readSSI(int csPin, bool reverse) {
-    // Protocole SSI 12-bit (HH-12):
-    // - CS LOW active la transmission
-    // - 18 pulses CLK (12 bits data + 6 bits status/parity)
-    // - Data valide sur front montant CLK (MSB first)
+#if ENABLE_AZ_HH12
 
+void hh12Init() {
+    pinMode(PIN_ENC_AZ_CS, OUTPUT);
+    pinMode(PIN_ENC_AZ_CLK, OUTPUT);
+    pinMode(PIN_ENC_AZ_MISO, INPUT);
+    digitalWrite(PIN_ENC_AZ_CS, HIGH);   // CS repos HIGH
+    digitalWrite(PIN_ENC_AZ_CLK, LOW);   // CLK repos LOW
+    DEBUG_PRINT("[HH12] Init : CS=IO");
+    DEBUG_PRINT(PIN_ENC_AZ_CS);
+    DEBUG_PRINT(" CLK=IO");
+    DEBUG_PRINT(PIN_ENC_AZ_CLK);
+    DEBUG_PRINT(" DATA=IO");
+    DEBUG_PRINTLN(PIN_ENC_AZ_MISO);
+}
+
+int hh12ReadRaw(int csPin, bool reverse) {
+    // Protocole SSI 12-bit (HH-12) :
+    // CS LOW → 18 pulses CLK → 12 bits data (MSB first) → CS HIGH
     unsigned long data = 0;
 
-    // Activer transmission
     digitalWrite(csPin, LOW);
-    delayMicroseconds(5);
+    delayMicroseconds(20);
 
-    // 18 pulses CLK
     for (int i = 0; i < 18; i++) {
-        digitalWrite(PIN_HH12_SCLK, LOW);
-        delayMicroseconds(5);
-        digitalWrite(PIN_HH12_SCLK, HIGH);
-        delayMicroseconds(5);
+        digitalWrite(PIN_ENC_AZ_CLK, LOW);
+        delayMicroseconds(10);
+        digitalWrite(PIN_ENC_AZ_CLK, HIGH);
+        delayMicroseconds(10);
 
-        // Lire les 12 premiers bits (data utile)
-        if (i < 12 && digitalRead(PIN_HH12_MISO)) {
-            data |= (1UL << (11 - i));  // MSB first
+        if (i < 12 && digitalRead(PIN_ENC_AZ_MISO)) {
+            data |= (1UL << (11 - i));
         }
     }
 
-    // Fin transmission
     digitalWrite(csPin, HIGH);
+    delayMicroseconds(20);
 
     int val = (int)data;
     return reverse ? (4095 - val) : val;
 }
+
+float hh12ReadAngle(int csPin, bool reverse) {
+    int raw = hh12ReadRaw(csPin, reverse);
+    return (float)raw * 360.0f / 4096.0f;
+}
+
+#endif // ENABLE_AZ_HH12
+
+// ════════════════════════════════════════════════════════════════
+// PCNT Hall AZ — Hardware quadrature counter
+// ════════════════════════════════════════════════════════════════
+
+#if ENABLE_AZ_HALL_PCNT
+
+// TODO Phase 4b : implémenter avec driver/pulse_cnt.h
+// pcnt_unit_config_t, pcnt_channel_config_t, etc.
+
+void pcntAzInit() {
+    // TODO : configurer PCNT unit 0, pins IO3/IO4, quadrature 4x
+}
+
+int32_t pcntAzGetCount() {
+    // TODO : pcnt_unit_get_count()
+    return 0;
+}
+
+void pcntAzSetCount(int32_t value) {
+    // TODO : pcnt_unit_clear_count() + offset
+    (void)value;
+}
+
+#endif // ENABLE_AZ_HALL_PCNT

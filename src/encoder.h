@@ -1,10 +1,9 @@
 // ════════════════════════════════════════════════════════════════
-// EME ROTATOR CONTROLLER — Encodeurs HH-12 SSI (absolus)
+// EME ROTATOR CONTROLLER — Module Encodeurs
 // ════════════════════════════════════════════════════════════════
-// AZ : HH-12 absolu sur axe final — mapping direct 0-4095 = 0-360°
-// EL : HH-12 absolu sur axe final — mapping direct 0-4095 = 0-90°
-// Pins SPI2 du ProS3 : SCLK=IO36, DATA=IO37, CS_AZ=IO35, CS_EL=IO34
-// Via level shifter TXS0108E (3.3V ProS3 ↔ 5V HH-12)
+// AZ : AS5048A SPI 14-bit (ENABLE_AZ_AS5048A) ou HH-12 SSI 12-bit (ENABLE_AZ_HH12)
+// EL : HWT901B RS-485 inclinomètre (via module Modbus, pas ici)
+// Hall AZ : PCNT hardware (ENABLE_AZ_HALL_PCNT)
 // ════════════════════════════════════════════════════════════════
 
 #ifndef ENCODER_H
@@ -14,32 +13,51 @@
 #include "config.h"
 
 // ════════════════════════════════════════════════════════════════
-// VARIABLES GLOBALES POSITION
+// AS5048A — Encodeur magnétique AZ 14-bit (Phase 4a)
 // ════════════════════════════════════════════════════════════════
+#if ENABLE_AZ_AS5048A
 
-// Position courante en degrés (mise à jour par updateEncoders)
-extern float currentAz;
-extern float currentEl;
+// Initialise les pins SPI bit-bang AS5048A
+void as5048aInit();
 
-// Valeurs brutes encodeurs (0-4095)
-extern int rawCountsAz;
-extern int rawCountsEl;
+// Lit l'angle brut 14-bit (0-16383). Retourne -1 en cas d'erreur.
+int16_t as5048aReadRaw();
+
+// Lit l'angle en degrés (0.0 - 359.978)
+float as5048aReadAngle();
+
+#endif
 
 // ════════════════════════════════════════════════════════════════
-// FONCTIONS PUBLIQUES
+// HH-12 — Encodeur capacitif AZ 12-bit SSI (fallback/legacy)
 // ════════════════════════════════════════════════════════════════
+#if ENABLE_AZ_HH12
 
-// Initialise les pins SSI et effectue la première lecture
-void setupEncoders();
+// Initialise les pins SSI pour le HH-12
+void hh12Init();
 
-// Met à jour currentAz/currentEl (appelé dans loop, throttled)
-// En mode simulation, déplace la position vers targetAz/targetEl
-void updateEncoders();
+// Lecture SSI brute HH-12 (0-4095)
+int hh12ReadRaw(int csPin, bool reverse);
 
-// Lecture SSI brute d'un encodeur HH-12
-// @param csPin   Pin Chip Select
-// @param reverse Inverser le sens (true/false)
-// @return Valeur 0-4095
-int readSSI(int csPin, bool reverse);
+// Lit l'angle en degrés (0.0 - 359.912)
+float hh12ReadAngle(int csPin, bool reverse);
+
+#endif
+
+// ════════════════════════════════════════════════════════════════
+// PCNT Hall AZ — Compteur hardware quadrature (Phase 4b)
+// ════════════════════════════════════════════════════════════════
+#if ENABLE_AZ_HALL_PCNT
+
+// Initialise le PCNT hardware (unit 0, pins IO3/IO4)
+void pcntAzInit();
+
+// Lit le compteur PCNT AZ (int32, positif = CW)
+int32_t pcntAzGetCount();
+
+// Remet le compteur à une valeur donnée (recalibration AS5048A)
+void pcntAzSetCount(int32_t value);
+
+#endif
 
 #endif // ENCODER_H

@@ -4,18 +4,22 @@
 // W5500 (Adafruit 3201) sur SPI3 du ProS3
 // SPI3 : SCLK=IO12, MISO=IO13, MOSI=IO14, CS=IO15
 // DHCP avec fallback IP statique
-// 2 serveurs TCP : port 4533 (rotateur) + port 4534 (app)
+// 2 serveurs TCP : port 4533 (EasyCom) + port 4534 (app)
 // ════════════════════════════════════════════════════════════════
 
 #include "config.h"
 
-#if ETHERNET_ENABLED
+#if ENABLE_ETHERNET
 
 #include "network.h"
 #include "protocol.h"
 
 #include <SPI.h>
 #include <Ethernet.h>
+
+#if ENABLE_APP_TCP
+  #include <ArduinoJson.h>
+#endif
 
 // Wrapper pour contourner l'incompatibilité entre le Server ESP32
 // (begin(uint16_t) pure virtual) et EthernetServer (begin() sans param)
@@ -47,19 +51,27 @@ static bool ethConnected = false;
 static bool useDHCP = false;  // true si DHCP a réussi (pour maintain())
 
 // Serveurs TCP
-static W5500Server rotatorServer(ROTATOR_TCP_PORT);
+static W5500Server easycomServer(EASYCOM_TCP_PORT);
 static W5500Server appServer(APP_TCP_PORT);
 
 // Clients TCP actuels (1 par port)
-static EthernetClient rotatorClient;
+static EthernetClient easycomClient;
 static EthernetClient appClient;
 
 // État du parser pour chaque client TCP
-static ProtocolState rotatorState;
+static ProtocolState easycomState;
 static ProtocolState appState;
 
 // handleCommand est défini dans main.cpp
 extern void handleCommand(ParsedCommand &cmd, Stream &output);
+
+// Télémétrie Nano R4 (définie dans main.cpp)
+#if ENABLE_RS485
+  extern uint16_t nanoA0mV;
+  extern uint16_t nanoA1mV;
+  extern uint16_t nanoUptime;
+  extern bool     nanoOnline;
+#endif
 
 // ════════════════════════════════════════════════════════════════
 // INITIALISATION
@@ -133,15 +145,15 @@ void networkInit() {
     ethConnected = true;
 
     // Initialiser les états de parser TCP
-    protocolStateInit(rotatorState);
+    protocolStateInit(easycomState);
     protocolStateInit(appState);
 
     // Démarrer les serveurs TCP
-    rotatorServer.begin();
+    easycomServer.begin();
     appServer.begin();
 
-    DEBUG_PRINT("Serveur TCP rotateur sur port ");
-    DEBUG_PRINTLN(ROTATOR_TCP_PORT);
+    DEBUG_PRINT("Serveur TCP EasyCom sur port ");
+    DEBUG_PRINTLN(EASYCOM_TCP_PORT);
     DEBUG_PRINT("Serveur TCP app sur port ");
     DEBUG_PRINTLN(APP_TCP_PORT);
 }
@@ -187,6 +199,101 @@ static void handleTcpClient(W5500Server &server, EthernetClient &client,
 }
 
 // ════════════════════════════════════════════════════════════════
+// APP TCP — Serveur JSON (port 4534)
+// ════════════════════════════════════════════════════════════════
+
+#if ENABLE_APP_TCP
+
+#define APP_JSON_BUF_SIZE 256
+static char appJsonBuf[APP_JSON_BUF_SIZE];
+static uint8_t appJsonIdx = 0;
+
+// Parse une ligne JSON reçue du client app et exécute la commande
+static void appParseLine(const char *line) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, line);
+    if (err) {
+        DEBUG_PRINT("[APP] JSON parse error: ");
+        DEBUG_PRINTLN(err.c_str());
+        return;
+    }
+
+    const char *cmd = doc["cmd"];
+    if (!cmd) return;
+
+    ParsedCommand parsed;
+    parsed.cmd = CMD_NONE;
+    parsed.az = 0;
+    parsed.el = 0;
+
+    if (strcmp(cmd, "goto") == 0) {
+        parsed.az = doc["az"] | 0.0f;
+        parsed.el = doc["el"] | 0.0f;
+        parsed.cmd = CMD_GOTO_AZEL;
+    } else if (strcmp(cmd, "stop") == 0) {
+        parsed.cmd = CMD_STOP_ALL;
+    } else if (strcmp(cmd, "jog") == 0) {
+        const char *dir = doc["dir"];
+        if (dir) {
+            if (strcmp(dir, "cw") == 0)   parsed.cmd = CMD_JOG_CW;
+            else if (strcmp(dir, "ccw") == 0)  parsed.cmd = CMD_JOG_CCW;
+            else if (strcmp(dir, "up") == 0)   parsed.cmd = CMD_JOG_UP;
+            else if (strcmp(dir, "down") == 0) parsed.cmd = CMD_JOG_DOWN;
+        }
+    } else if (strcmp(cmd, "jog_stop") == 0) {
+        parsed.cmd = CMD_STOP_ALL;
+    }
+
+    if (parsed.cmd != CMD_NONE) {
+        handleCommand(parsed, appClient);
+    }
+}
+
+// Gère le client TCP app : connexion, réception JSON, déconnexion
+static void handleAppTcpClient() {
+    // Accepter nouvelle connexion (accept() détecte la connexion TCP
+    // immédiatement, contrairement à available() qui attend des données)
+    EthernetClient newClient = appServer.accept();
+    if (newClient) {
+        if (!appClient || !appClient.connected()) {
+            appClient = newClient;
+            appJsonIdx = 0;
+            DEBUG_PRINTLN("[APP] Client connecté sur port 4534");
+        } else if (newClient != appClient) {
+            newClient.stop();
+        }
+    }
+
+    // Lire données entrantes (JSON ligne par ligne)
+    if (appClient && appClient.connected()) {
+        while (appClient.available() > 0) {
+            char c = appClient.read();
+            if (c == '\n' || c == '\r') {
+                if (appJsonIdx > 0) {
+                    appJsonBuf[appJsonIdx] = '\0';
+                    appParseLine(appJsonBuf);
+                    appJsonIdx = 0;
+                }
+            } else if (appJsonIdx < APP_JSON_BUF_SIZE - 1) {
+                appJsonBuf[appJsonIdx++] = c;
+            } else {
+                // Buffer overflow — ignorer la ligne
+                appJsonIdx = 0;
+            }
+        }
+    }
+
+    // Nettoyer client déconnecté
+    if (appClient && !appClient.connected()) {
+        DEBUG_PRINTLN("[APP] Client déconnecté de port 4534");
+        appClient.stop();
+        appJsonIdx = 0;
+    }
+}
+
+#endif // ENABLE_APP_TCP
+
+// ════════════════════════════════════════════════════════════════
 // BOUCLE RÉSEAU (appelée dans loop)
 // ════════════════════════════════════════════════════════════════
 
@@ -203,9 +310,14 @@ void networkLoop() {
         }
     }
 
-    // Traiter les deux serveurs TCP
-    handleTcpClient(rotatorServer, rotatorClient, rotatorState, "rotateur");
-    handleTcpClient(appServer,   appClient,   appState,   "app");
+    // Traiter les serveurs TCP
+    handleTcpClient(easycomServer, easycomClient, easycomState, "easycom");
+
+    #if ENABLE_APP_TCP
+        handleAppTcpClient();
+    #else
+        handleTcpClient(appServer, appClient, appState, "app");
+    #endif
 }
 
 bool networkIsConnected() {
@@ -216,6 +328,52 @@ String networkGetIP() {
     if (!ethConnected) return "N/A";
     IPAddress ip = Ethernet.localIP();
     return String(ip[0]) + "." + String(ip[1]) + "." + String(ip[2]) + "." + String(ip[3]);
+}
+
+bool appTcpConnected() {
+    #if ENABLE_APP_TCP
+        return appClient && appClient.connected();
+    #else
+        return false;
+    #endif
+}
+
+void appSendStatus(float az, float el, float tgtAz, float tgtEl,
+                   const char *state, bool moving, bool stopBtn,
+                   bool gpsFix, bool stale) {
+    #if ENABLE_APP_TCP
+    if (!appClient || !appClient.connected()) return;
+
+    char buf[384];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"type\":\"status\","
+        "\"az\":%.1f,\"el\":%.1f,"
+        "\"az_target\":%.1f,\"el_target\":%.1f,"
+        "\"state\":\"%s\","
+        "\"moving\":%s,"
+        "\"stop_pressed\":%s,"
+        "\"gps_fix\":%s,"
+        "\"stale\":%s",
+        az, el, tgtAz, tgtEl, state,
+        moving ? "true" : "false",
+        stopBtn ? "true" : "false",
+        gpsFix ? "true" : "false",
+        stale ? "true" : "false");
+
+    // Ajouter télémétrie Nano R4 si RS-485 actif
+    #if ENABLE_RS485
+    n += snprintf(buf + n, sizeof(buf) - n,
+        ",\"nano\":{\"online\":%s,\"a0_mv\":%u,\"a1_mv\":%u,\"uptime\":%u}",
+        nanoOnline ? "true" : "false",
+        nanoA0mV, nanoA1mV, nanoUptime);
+    #endif
+
+    n += snprintf(buf + n, sizeof(buf) - n, "}\n");
+    appClient.write((const uint8_t*)buf, n);
+    #else
+    (void)az; (void)el; (void)tgtAz; (void)tgtEl;
+    (void)state; (void)moving; (void)stopBtn; (void)gpsFix; (void)stale;
+    #endif
 }
 
 #endif // ETHERNET_ENABLED

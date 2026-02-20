@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 // === Debug ===
-// Mettre à 0 pour tester avec PSTRotator (supprime les messages debug sur Serial)
+// Mettre à 0 pour désactiver les messages debug sur Serial USB
 #define DEBUG 1
 #if DEBUG
   #define DEBUG_PRINT(x)   Serial.print(x)
@@ -12,127 +12,225 @@
   #define DEBUG_PRINTLN(x)
 #endif
 
-// ═══════════════════════════════════════════════════════
-// GPIO MAPPING ProS3 — VALIDATED vs schematic Rev P4
-// 25 GPIO + 2 I2C Qwiic = 27 pins used out of 27 available
-// GPIO interdits (internes ProS3, pas sur headers) :
-//   IO10 = BATTERY VOLTAGE (VBAT)
-//   IO11 = pas routé vers les headers
-//   IO33 = DETECT 5V PRESENT (VBUS)
-//   IO17 = LDO2 Enable (LED RGB)
-//   IO18 = RGB LED WS2812B
-//   IO19/IO20 = USB D-/D+
-//   IO26-IO32 = SPI Flash + PSRAM
-//   IO45/IO46 = Strapping pins
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// FEATURE FLAGS — Développement incrémental v7.4
+// Activer un module APRÈS avoir testé les précédents.
+// ═══════════════════════════════════════════════════════════════
 
-// ═══════ MC33926 — Current feedback (ADC1) ═══════
+// ── ETHERNET + PROTOCOLES ──
+#define ENABLE_ETHERNET       1   // W5500 Ethernet (SPI3) — ✅ TESTÉ
+#define ENABLE_EASYCOM        1   // EasyCom II TCP port 4533 — ✅ TESTÉ
+#define ENABLE_APP_TCP        1   // JSON TCP server port 4534 (app Windows) — ✅ ACTIF
+#define ENABLE_AZELDAT        0   // Autonomous mode WSJT-X azel.dat
+
+// ── I/O EXPANDER ──
+#define ENABLE_MCP23017       1   // MCP23017 I2C (limites, boutons, direction moteur, LEDs) — ✅ TEST
+
+// ── MOTEURS ──
+#define ENABLE_MOTORS         1   // MC33926 (MCPWM + ADC courant) — ✅ TEST
+#define ENABLE_PID            0   // Boucle PID 100 Hz Core 1
+
+// ── ENCODEUR AZ — choisir UN seul ──
+#define ENABLE_AZ_AS5048A     0   // AS5048A SPI 14-bit (hardware cible)
+#define ENABLE_AZ_HH12        1   // HH-12 SSI 12-bit — ✅ TEST IO35/36/37
+#define ENABLE_AZ_HALL_PCNT   0   // Hall 12 PPR → PCNT hardware
+
+// ── CAPTEUR EL — choisir UN seul ──
+#define ENABLE_EL_HWT901B     0   // HWT901B-RS485 inclinomètre (hardware cible)
+#define ENABLE_EL_HH12        0   // HH-12 SSI 12-bit (legacy/fallback)
+
+// ── RS-485 / MODBUS ──
+#define ENABLE_RS485          1   // RS-485 Modbus master (UART1) — ✅ TEST
+#define ENABLE_NANO_R4        0   // Nano R4 télémétrie (addr 1)
+#define ENABLE_HWT901B_BUS    0   // HWT901B sur bus Modbus (addr 2)
+
+// ── GPS ──
+#define ENABLE_GPS            1   // GPS NEO-6M (UART2 + PPS) — ✅ DIAGNOSTIC
+
+// ── CALIBRATION ──
+#define ENABLE_SOLAR_CAL      0   // Calibration solaire RF (section 27 specs)
+#define ENABLE_CAL_OFFSETS    0   // Appliquer offsets calibration aux positions
+
+// ── AFFICHAGE ──
+#define ENABLE_OLED           1   // OLED SSD1306 128x32 I2C 0.91" — ✅ I2C scan 0x3C
+
+// ── STOCKAGE ──
+#define ENABLE_EEPROM         1   // EEPROM/FRAM position (double buffering + CRC) — ✅ TESTÉ I2C
+#define ENABLE_NVS_CONFIG     0   // NVS configuration persistante
+
+// ── SÉCURITÉ ──
+#define ENABLE_STOP_BUTTON    1   // ISR bouton STOP (recommandé toujours actif)
+#define ENABLE_WATCHDOG       0   // Watchdog Core 1 (5s timeout)
+#define ENABLE_ANOMALY_DET    0   // Détection anomalies (surcourant, découplage)
+
+// ── SIMULATION ──
+#define ENABLE_SIM_POSITION   1   // Simuler position AZ/EL (test protocole)
+                                  // Désactiver quand vrais encodeurs activés
+
+// ═══════════════════════════════════════════════════════════════
+// VALIDATION COMPILE-TIME
+// ═══════════════════════════════════════════════════════════════
+
+#if ENABLE_AZ_AS5048A && ENABLE_AZ_HH12
+  #error "Cannot enable both AS5048A and HH-12 for AZ — choose one!"
+#endif
+#if ENABLE_EL_HWT901B && ENABLE_EL_HH12
+  #error "Cannot enable both HWT901B and HH-12 for EL — choose one!"
+#endif
+#if ENABLE_MOTORS && !ENABLE_MCP23017
+  #error "MOTORS requires MCP23017 (motor direction via I2C)"
+#endif
+#if ENABLE_PID && !ENABLE_MOTORS
+  #error "PID requires MOTORS"
+#endif
+#if ENABLE_AZ_HALL_PCNT && !ENABLE_AZ_AS5048A && !ENABLE_AZ_HH12
+  #error "PCNT AZ requires an absolute AZ encoder for recalibration"
+#endif
+#if ENABLE_HWT901B_BUS && !ENABLE_RS485
+  #error "HWT901B Modbus requires RS485"
+#endif
+#if ENABLE_NANO_R4 && !ENABLE_RS485
+  #error "Nano R4 Modbus requires RS485"
+#endif
+#if ENABLE_SOLAR_CAL && !ENABLE_GPS
+  #error "Solar calibration requires GPS (UTC time for ephemeris)"
+#endif
+#if ENABLE_AZELDAT && !ENABLE_APP_TCP
+  #error "AZELDAT autonomous mode requires APP_TCP (JSON port 4534)"
+#endif
+#if ENABLE_SIM_POSITION && (ENABLE_AZ_AS5048A || ENABLE_AZ_HH12) \
+                        && (ENABLE_EL_HWT901B || ENABLE_EL_HH12)
+  #warning "SIM_POSITION enabled with real encoders — sim will be ignored"
+#endif
+
+// ═══════════════════════════════════════════════════════════════
+// GPIO MAPPING ProS3 — v7.4 VALIDATED vs pinout card 2023
+// 22 GPIO used + 5 reserve (IO0, IO39, IO40, IO41, IO42)
+// ═══════════════════════════════════════════════════════════════
+
+// ── MC33926 — Current feedback (ADC1) ──
 #define PIN_MOT_AZ_FB       1    // IO1  — ADC1_CH0, 0.525 V/A
 #define PIN_MOT_EL_FB       2    // IO2  — ADC1_CH1, 0.525 V/A
 
-// ═══════ PCNT — Hall encoders (via VMA452 + 74HC14) ═══════
+// ── PCNT — Hall encoder AZ uniquement (via VMA452 + 74HC14) ──
 #define PIN_HALL_AZ_A       3    // IO3  — PCNT unit 0, signal
 #define PIN_HALL_AZ_B       4    // IO4  — PCNT unit 0, control
-#define PIN_HALL_EL_A       5    // IO5  — PCNT unit 1, signal
-#define PIN_HALL_EL_B       6    // IO6  — PCNT unit 1, control
 
-// ═══════ MC33926 — Status Flag + STOP button ═══════
-#define PIN_MC_SF           0    // IO0  — Input, open drain, LOW=fault
-#define PIN_STOP_BUTTON     7    // IO7  — Input, interrupt, NF fail-safe
+// ── GPS NEO-6M — Source UTC ──
+#define PIN_GPS_RX          5    // IO5  — UART2 RX ← GPS TX (NMEA 9600)
+#define PIN_GPS_TX          6    // IO6  — UART2 TX → GPS RX (config)
 
-// ═══════ I2C Qwiic (fixed in hardware on ProS3) ═══════
+// ── Bouton STOP (NF fail-safe) ──
+#define PIN_STOP_BUTTON     7    // IO7  — Input, interrupt
+
+// ── I2C Qwiic (fixé en hardware sur ProS3) ──
 #define PIN_I2C_SDA         8    // IO8  — STEMMA Qwiic SDA
 #define PIN_I2C_SCL         9    // IO9  — STEMMA Qwiic SCL
 
-// ═══════ SPI3 — W5500 Ethernet ═══════
-#define PIN_W5500_CS        15   // IO15 — Chip Select W5500 (cristal 32 kHz non peuplé)
+// ── SPI3 — W5500 Ethernet ──
+#define PIN_W5500_CS        15   // IO15 — Chip Select W5500
 #define PIN_W5500_SCLK      12   // IO12 — SPI3 Clock
 #define PIN_W5500_MISO      13   // IO13 — SPI3 MISO
 #define PIN_W5500_MOSI      14   // IO14 — SPI3 MOSI
 
-// ═══════ LED RGB intégrée (NeoPixel WS2812B) ═══════
-#define PIN_RGB_LED         18   // IO18 — LED RGB ProS3
-#define PIN_LDO2_EN         17   // IO17 — LDO2 Enable (alimente la LED RGB)
+// ── MCP23017 — Interrupt ──
+#define PIN_MCP_INT         16   // IO16 — Input, interrupt (limites + boutons + SF)
 
-// ═══════ MCPWM — Motor PWM (via MC33926 D2) ═══════
+// ── MCPWM — Motor PWM (via MC33926 D2) ──
 #define PIN_MOT_AZ_PWM      21   // IO21 — MCPWM timer 0, operator A
 #define PIN_MOT_EL_PWM      38   // IO38 — MCPWM timer 1, operator A
 
-// ═══════ MCP23017 — Interrupt (limit switches + buttons) ═══════
-#define PIN_MCP_INT         16   // IO16 — Input, interrupt (cristal 32 kHz non peuplé)
+// ── GPS PPS ──
+#define PIN_GPS_PPS         34   // IO34 — PPS interrupt (1 Hz, rising edge = UTC)
 
-// ═══════ SPI2 — HH-12 encoders (via TXS0108E) ═══════
-#define PIN_HH12_CS_EL      34   // IO34 — SPI2 CS elevation
-#define PIN_HH12_CS_AZ      35   // IO35 — SPI2 CS azimuth
-#define PIN_HH12_SCLK       36   // IO36 — SPI2 SCLK
-#define PIN_HH12_MISO       37   // IO37 — SPI2 MISO (DATA SSI)
+// ── AS5048A Azimut — SPI bit-bang dédié (3.3V natif) ──
+#define PIN_ENC_AZ_CS       35   // IO35 — CS azimut
+#define PIN_ENC_AZ_CLK      36   // IO36 — CLK azimut
+#define PIN_ENC_AZ_MISO     37   // IO37 — MISO azimut (data du capteur)
 
-// ═══════ MC33926 — Direction (IN1/IN2) via JTAG pins ═══════
-#define PIN_MOT_AZ_IN1      39   // IO39 — Direction AZ bit 1
-#define PIN_MOT_AZ_IN2      40   // IO40 — Direction AZ bit 2
-#define PIN_MOT_EL_IN1      41   // IO41 — Direction EL bit 1
-#define PIN_MOT_EL_IN2      42   // IO42 — Direction EL bit 2
-
-// ═══════ UART1 — RS-485 to Arduino Nano R4 ═══════
+// ── UART1 — RS-485 bus (Nano R4 addr 1 + HWT901B addr 2) ──
 #define PIN_RS485_TX        43   // IO43 — UART1 TX → MAX485 DI
 #define PIN_RS485_RX        44   // IO44 — UART1 RX ← MAX485 RO
 
-// ═══════ I2C Addresses ═══════
-#define I2C_ADDR_EEPROM     0x50
-#define I2C_ADDR_MCP23017   0x20
-#define I2C_ADDR_OLED       0x3F
-#define I2C_SPEED           400000  // 400 kHz Fast Mode
+// ── Reserve (5 pins disponibles) ──
+// IO0  — Strapping pin, utilisable après boot
+// IO39 — Libre (ex AS5048A EL CLK)
+// IO40 — Libre (ex AS5048A EL MISO)
+// IO41 — Libre (ex MTDI)
+// IO42 — Libre (ex MTMS)
 
-// ═══════ Protocole rotator ═══════
-// Décommenter UN SEUL des deux :
-//#define PROTOCOL_GS232      // Yaesu GS-232B (PSTRotator, N1MM, etc.)
-#define PROTOCOL_EASYCOM    // EasyCom II (HRD, certains logiciels)
+// ── LED RGB intégrée ProS3 (debug visuel) ──
+#define PIN_RGB_LED         18   // IO18 — WS2812B NeoPixel
+#define PIN_LDO2_EN         17   // IO17 — LDO2 Enable (alimente LED RGB)
 
-// ═══════ Connexion rotateur ═══════
-// ETHERNET_ENABLED = 1 : protocole rotateur via TCP Ethernet (W5500)
-//                        Serial USB = upload uniquement
-// ETHERNET_ENABLED = 0 : protocole rotateur via Serial USB (PSTRotator)
-//                        pas d'Ethernet
-#define ETHERNET_ENABLED    1
+// ═══════════════════════════════════════════════════════════════
+// I2C Addresses
+// ═══════════════════════════════════════════════════════════════
+#define I2C_ADDR_MCP23017   0x27   // A0=A1=A2=VCC (carte CQROBOT)
+#define I2C_ADDR_OLED       0x3C   // SSD1306 128x32 0.91" Midas MDOB128032GV-WI
+#define I2C_ADDR_EEPROM     0x50   // AT24C256 ou FM24C64
+#define I2C_SPEED           400000 // 400 kHz Fast Mode
 
-// ═══════ TCP Ports ═══════
-#define ROTATOR_TCP_PORT    4533    // Protocole rotateur (GS-232B ou EasyCom)
-#define APP_TCP_PORT        4534    // Application Windows (JSON)
+// ═══════════════════════════════════════════════════════════════
+// TCP Ports
+// ═══════════════════════════════════════════════════════════════
+#define EASYCOM_TCP_PORT    4533   // EasyCom II (PSTRotator)
+#define APP_TCP_PORT        4534   // Application Windows (JSON)
 
-// ═══════ Configuration réseau ═══════
-// DHCP_ENABLED = 1 : essayer DHCP d'abord, puis fallback IP statique
-// DHCP_ENABLED = 0 : IP statique directe (évite double-init W5500 = 1 min de délai)
+// ═══════════════════════════════════════════════════════════════
+// Configuration réseau
+// ═══════════════════════════════════════════════════════════════
 #define DHCP_ENABLED        1
-
 #define STATIC_IP           192, 168, 0, 200
 #define STATIC_GATEWAY      192, 168, 0, 1
 #define STATIC_SUBNET       255, 255, 255, 0
 #define STATIC_DNS          192, 168, 0, 1
 #define STATIC_DNS2         8, 8, 8, 8
-#define DHCP_TIMEOUT_MS     5000    // Timeout DHCP en ms (si DHCP_ENABLED)
+#define DHCP_TIMEOUT_MS     5000
 
-// ═══════ Paramètres rotor ═══════
-#define AZ_MIN 0.0
-#define AZ_MAX 360.0
-#define EL_MIN 0.0
-#define EL_MAX 90.0
+// ═══════════════════════════════════════════════════════════════
+// RS-485 / Modbus RTU
+// ═══════════════════════════════════════════════════════════════
+#define RS485_BAUD              9600    // 9600 pour premier test (robuste)
+#define NANO_MODBUS_ID          1       // Slave ID du Nano R4 (télémétrie)
+#define MODBUS_POLL_INTERVAL_MS 2000    // Polling toutes les 2s (test)
 
-// ═══════ Mode simulation (sans hardware) ═══════
-// 1 = simuler les encodeurs (pas de hardware), 0 = vrais HH-12
-#define SIMULATE_ENCODERS   1
+// ═══════════════════════════════════════════════════════════════
+// Paramètres rotor
+// ═══════════════════════════════════════════════════════════════
+#define AZ_MIN 0.0f
+#define AZ_MAX 360.0f
+#define EL_MIN 0.0f
+#define EL_MAX 90.0f
 
-// Vitesse moteur simulée (°/s)
-// AZ : 360° en 3 min = 2.0 °/s
-// EL : 90° en 2 min  = 0.75 °/s
-#define SIM_AZ_SPEED        2.0f
-#define SIM_EL_SPEED        0.75f
+// ═══════════════════════════════════════════════════════════════
+// Persistance cible EEPROM + indicateur stale
+// ═══════════════════════════════════════════════════════════════
+#define STALE_TARGET_MS         300000  // 5 min sans commande → cible "stale"
 
-// ═══════ Encodeurs HH-12 SSI (absolus) ═══════
-#define SSI_COUNTS_PER_REV  4096    // 12-bit = 4096 counts par tour
-// AZ : HH-12 absolu sur axe final — mapping direct 0-4095 = 0-360°
-// EL : HH-12 absolu sur axe final — mapping direct 0-4095 = 0-90°
-#define REVERSE_AZ          false   // Inverser sens azimut
-#define REVERSE_EL          false   // Inverser sens élévation
-#define ENCODER_READ_INTERVAL 20    // Lecture toutes les 20ms
+// ═══════════════════════════════════════════════════════════════
+// Moteurs MC33926 (quand ENABLE_MOTORS = 1)
+// ═══════════════════════════════════════════════════════════════
+#define MOT_PWM_FREQ        20000   // 20 kHz (fast slew mode)
+#define MOT_DEFAULT_DUTY    40.0f   // % duty premier test (prudent)
+#define MOT_DEADBAND_DEG    1.0f    // ° zone morte (pas de mouvement)
+#define MOT_CONTROL_MS      100     // Période contrôle moteur (ms)
 
-#endif
+// ═══════════════════════════════════════════════════════════════
+// Simulation (quand ENABLE_SIM_POSITION = 1)
+// ═══════════════════════════════════════════════════════════════
+#define SIM_AZ_SPEED        2.0f    // °/s (360° en 3 min)
+#define SIM_EL_SPEED        0.75f   // °/s (90° en 2 min)
+
+// ═══════════════════════════════════════════════════════════════
+// FreeRTOS — Configuration tâches
+// ═══════════════════════════════════════════════════════════════
+#define TASK_PID_PERIOD_MS      10      // 100 Hz PID loop
+#define TASK_PID_STACK_SIZE     4096
+#define TASK_PID_PRIORITY       (configMAX_PRIORITIES - 1)
+
+#define TASK_ENC_PERIOD_MS      1000    // 1 Hz encodeur absolu
+#define TASK_ENC_STACK_SIZE     4096
+#define TASK_ENC_PRIORITY       (configMAX_PRIORITIES - 2)
+
+#endif // CONFIG_H

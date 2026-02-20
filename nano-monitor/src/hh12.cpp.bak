@@ -1,0 +1,135 @@
+// ════════════════════════════════════════════════════════════════
+// EME ROTATOR — Encodeurs HH-12 SSI (Implementation)
+// ════════════════════════════════════════════════════════════════
+// Porté depuis ESP32 encoder.cpp
+// 2 jeux de pins indépendants (pas de partage SCLK/DATA)
+// 5V natif sur UNO R4 — pas de level shifter
+// ════════════════════════════════════════════════════════════════
+
+#include "hh12.h"
+#include "config.h"
+
+// ════════════════════════════════════════════════════════════════
+// VARIABLES GLOBALES
+// ════════════════════════════════════════════════════════════════
+
+int hh12RawAz = 0;
+int hh12RawEl = 0;
+uint16_t hh12AngleAzX10 = 0;
+uint16_t hh12AngleElX10 = 0;
+bool hh12AzOk = false;
+bool hh12ElOk = false;
+
+static unsigned long lastHh12ReadTime = 0;
+
+// ════════════════════════════════════════════════════════════════
+// INITIALISATION
+// ════════════════════════════════════════════════════════════════
+
+void hh12Init() {
+    // AZ : pins indépendants
+    pinMode(PIN_HH12_AZ_CS, OUTPUT);
+    pinMode(PIN_HH12_AZ_SCLK, OUTPUT);
+    pinMode(PIN_HH12_AZ_DATA, INPUT);
+    digitalWrite(PIN_HH12_AZ_CS, HIGH);
+    digitalWrite(PIN_HH12_AZ_SCLK, HIGH);
+
+    // EL : pins indépendants
+    pinMode(PIN_HH12_EL_CS, OUTPUT);
+    pinMode(PIN_HH12_EL_SCLK, OUTPUT);
+    pinMode(PIN_HH12_EL_DATA, INPUT);
+    digitalWrite(PIN_HH12_EL_CS, HIGH);
+    digitalWrite(PIN_HH12_EL_SCLK, HIGH);
+
+    // Diagnostic initial : 5 lectures consécutives
+    delay(100);  // Laisser les HH-12 se stabiliser
+    DEBUG_PRINTLN("--- Diagnostic HH-12 (5 lectures) ---");
+    for (int i = 0; i < 5; i++) {
+        int az = readSSI(PIN_HH12_AZ_CS, PIN_HH12_AZ_SCLK, PIN_HH12_AZ_DATA, false);
+        int el = readSSI(PIN_HH12_EL_CS, PIN_HH12_EL_SCLK, PIN_HH12_EL_DATA, false);
+        DEBUG_PRINT("  #"); DEBUG_PRINT(i);
+        DEBUG_PRINT("  AZ raw="); DEBUG_PRINT(az);
+        DEBUG_PRINT("  EL raw="); DEBUG_PRINTLN(el);
+        delay(50);
+    }
+    DEBUG_PRINTLN("--- Fin diagnostic ---");
+
+    // Première lecture effective
+    hh12RawAz = readSSI(PIN_HH12_AZ_CS, PIN_HH12_AZ_SCLK, PIN_HH12_AZ_DATA, REVERSE_AZ);
+    hh12RawEl = readSSI(PIN_HH12_EL_CS, PIN_HH12_EL_SCLK, PIN_HH12_EL_DATA, REVERSE_EL);
+
+    hh12AngleAzX10 = (uint16_t)((uint32_t)hh12RawAz * 3600 / 4096);
+    hh12AngleElX10 = (uint16_t)((uint32_t)hh12RawEl * 3600 / 4096);
+
+    hh12AzOk = true;
+    hh12ElOk = true;
+
+    DEBUG_PRINTLN("HH-12 initialisés (2× indépendants, 5V direct)");
+    DEBUG_PRINT("AZ raw="); DEBUG_PRINT(hh12RawAz);
+    DEBUG_PRINT(" angle="); DEBUG_PRINT(hh12AngleAzX10 / 10);
+    DEBUG_PRINT("."); DEBUG_PRINT(hh12AngleAzX10 % 10);
+    DEBUG_PRINT("  EL raw="); DEBUG_PRINT(hh12RawEl);
+    DEBUG_PRINT(" angle="); DEBUG_PRINT(hh12AngleElX10 / 10);
+    DEBUG_PRINT("."); DEBUG_PRINTLN(hh12AngleElX10 % 10);
+}
+
+// ════════════════════════════════════════════════════════════════
+// MISE À JOUR (appelé dans loop)
+// ════════════════════════════════════════════════════════════════
+
+void hh12Update() {
+    unsigned long now = millis();
+    if (now - lastHh12ReadTime < HH12_READ_INTERVAL) return;
+    lastHh12ReadTime = now;
+
+    int prevAz = hh12RawAz;
+    int prevEl = hh12RawEl;
+
+    hh12RawAz = readSSI(PIN_HH12_AZ_CS, PIN_HH12_AZ_SCLK, PIN_HH12_AZ_DATA, REVERSE_AZ);
+    hh12RawEl = readSSI(PIN_HH12_EL_CS, PIN_HH12_EL_SCLK, PIN_HH12_EL_DATA, REVERSE_EL);
+
+    hh12AngleAzX10 = (uint16_t)((uint32_t)hh12RawAz * 3600 / 4096);
+    hh12AngleElX10 = (uint16_t)((uint32_t)hh12RawEl * 3600 / 4096);
+
+    // Validation : un saut de >500 counts en une lecture est suspect
+    hh12AzOk = (abs(hh12RawAz - prevAz) < 500) || (prevAz == 0);
+    hh12ElOk = (abs(hh12RawEl - prevEl) < 500) || (prevEl == 0);
+}
+
+// ════════════════════════════════════════════════════════════════
+// LECTURE SSI (bit-bang, protocole HH-12)
+// ════════════════════════════════════════════════════════════════
+// Chaque encodeur a ses propres pins CS, SCLK, DATA
+
+int readSSI(int csPin, int sclkPin, int dataPin, bool reverse) {
+    // Protocole SSI 12-bit (HH-12) :
+    // - CS LOW active la transmission
+    // - 18 pulses CLK (12 bits data + 6 bits status/parity)
+    // - Data valide sur front montant CLK (MSB first)
+
+    unsigned long data = 0;
+
+    // Activer transmission
+    digitalWrite(csPin, LOW);
+    delayMicroseconds(20);  // Temps de setup CS
+
+    // 18 pulses CLK
+    for (int i = 0; i < 18; i++) {
+        digitalWrite(sclkPin, LOW);
+        delayMicroseconds(10);
+        digitalWrite(sclkPin, HIGH);
+        delayMicroseconds(10);
+
+        // Lire les 12 premiers bits (data utile)
+        if (i < 12 && digitalRead(dataPin)) {
+            data |= (1UL << (11 - i));  // MSB first
+        }
+    }
+
+    // Fin transmission
+    digitalWrite(csPin, HIGH);
+    delayMicroseconds(20);  // Temps de repos
+
+    int val = (int)data;
+    return reverse ? (4095 - val) : val;
+}

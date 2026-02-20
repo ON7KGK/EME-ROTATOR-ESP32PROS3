@@ -1,0 +1,134 @@
+// ════════════════════════════════════════════════════════════════
+// EME ROTATOR — Contrôle moteur MC33926 (Implementation)
+// ════════════════════════════════════════════════════════════════
+// Pololu Dual MC33926 :
+//   - PWM sur pin D2 (vitesse) → ici pins directes D3/D5
+//   - IN1/IN2 (direction) → via MCP23017 GPB0-3
+//   - FB (current feedback) → ADC A0/A1
+//   - nSF (status flag) → pin A2
+// ════════════════════════════════════════════════════════════════
+
+#include "motor.h"
+#include "config.h"
+#include <Adafruit_MCP23X17.h>
+
+// ════════════════════════════════════════════════════════════════
+// VARIABLES GLOBALES
+// ════════════════════════════════════════════════════════════════
+
+float motorCurrentAz = 0.0f;
+float motorCurrentEl = 0.0f;
+uint16_t motorFbRawAz = 0;
+uint16_t motorFbRawEl = 0;
+bool motorSfFault = false;
+
+// Référence au MCP23017 (partagé avec safety.cpp)
+extern Adafruit_MCP23X17 mcp;
+
+// ════════════════════════════════════════════════════════════════
+// INITIALISATION
+// ════════════════════════════════════════════════════════════════
+
+void motorInit() {
+    // PWM pins
+    pinMode(PIN_MOT_AZ_PWM, OUTPUT);
+    pinMode(PIN_MOT_EL_PWM, OUTPUT);
+    analogWrite(PIN_MOT_AZ_PWM, 0);
+    analogWrite(PIN_MOT_EL_PWM, 0);
+
+    // Current feedback (analog input)
+    pinMode(PIN_MOT_AZ_FB, INPUT);
+    pinMode(PIN_MOT_EL_FB, INPUT);
+
+    // Status flag (open-drain, pull-up interne)
+    pinMode(PIN_MC_SF, INPUT_PULLUP);
+
+    // Direction via MCP23017 (GPB0-3 = outputs)
+    mcp.pinMode(MCP_MOT_AZ_IN1, OUTPUT);
+    mcp.pinMode(MCP_MOT_AZ_IN2, OUTPUT);
+    mcp.pinMode(MCP_MOT_EL_IN1, OUTPUT);
+    mcp.pinMode(MCP_MOT_EL_IN2, OUTPUT);
+
+    // État initial : moteurs arrêtés (IN1=LOW, IN2=LOW = coast/brake)
+    mcp.digitalWrite(MCP_MOT_AZ_IN1, LOW);
+    mcp.digitalWrite(MCP_MOT_AZ_IN2, LOW);
+    mcp.digitalWrite(MCP_MOT_EL_IN1, LOW);
+    mcp.digitalWrite(MCP_MOT_EL_IN2, LOW);
+
+    DEBUG_PRINTLN("Moteurs MC33926 initialisés (PWM direct + direction MCP23017)");
+}
+
+// ════════════════════════════════════════════════════════════════
+// COMMANDE MOTEUR
+// ════════════════════════════════════════════════════════════════
+
+void motorSetDuty(int16_t dutyAz, int16_t dutyEl) {
+    // ─── Azimut ───
+    if (dutyAz > 0) {
+        // CW : IN1=HIGH, IN2=LOW
+        mcp.digitalWrite(MCP_MOT_AZ_IN1, HIGH);
+        mcp.digitalWrite(MCP_MOT_AZ_IN2, LOW);
+        analogWrite(PIN_MOT_AZ_PWM, constrain(dutyAz, 0, 255));
+    } else if (dutyAz < 0) {
+        // CCW : IN1=LOW, IN2=HIGH
+        mcp.digitalWrite(MCP_MOT_AZ_IN1, LOW);
+        mcp.digitalWrite(MCP_MOT_AZ_IN2, HIGH);
+        analogWrite(PIN_MOT_AZ_PWM, constrain(-dutyAz, 0, 255));
+    } else {
+        // Stop : IN1=LOW, IN2=LOW, PWM=0
+        mcp.digitalWrite(MCP_MOT_AZ_IN1, LOW);
+        mcp.digitalWrite(MCP_MOT_AZ_IN2, LOW);
+        analogWrite(PIN_MOT_AZ_PWM, 0);
+    }
+
+    // ─── Élévation ───
+    if (dutyEl > 0) {
+        // UP : IN1=HIGH, IN2=LOW
+        mcp.digitalWrite(MCP_MOT_EL_IN1, HIGH);
+        mcp.digitalWrite(MCP_MOT_EL_IN2, LOW);
+        analogWrite(PIN_MOT_EL_PWM, constrain(dutyEl, 0, 255));
+    } else if (dutyEl < 0) {
+        // DOWN : IN1=LOW, IN2=HIGH
+        mcp.digitalWrite(MCP_MOT_EL_IN1, LOW);
+        mcp.digitalWrite(MCP_MOT_EL_IN2, HIGH);
+        analogWrite(PIN_MOT_EL_PWM, constrain(-dutyEl, 0, 255));
+    } else {
+        // Stop : IN1=LOW, IN2=LOW, PWM=0
+        mcp.digitalWrite(MCP_MOT_EL_IN1, LOW);
+        mcp.digitalWrite(MCP_MOT_EL_IN2, LOW);
+        analogWrite(PIN_MOT_EL_PWM, 0);
+    }
+}
+
+void motorStop() {
+    analogWrite(PIN_MOT_AZ_PWM, 0);
+    analogWrite(PIN_MOT_EL_PWM, 0);
+    mcp.digitalWrite(MCP_MOT_AZ_IN1, LOW);
+    mcp.digitalWrite(MCP_MOT_AZ_IN2, LOW);
+    mcp.digitalWrite(MCP_MOT_EL_IN1, LOW);
+    mcp.digitalWrite(MCP_MOT_EL_IN2, LOW);
+}
+
+// ════════════════════════════════════════════════════════════════
+// LECTURE COURANT ET STATUS
+// ════════════════════════════════════════════════════════════════
+
+void motorUpdateFeedback() {
+    // Lire ADC
+    motorFbRawAz = analogRead(PIN_MOT_AZ_FB);
+    motorFbRawEl = analogRead(PIN_MOT_EL_FB);
+
+    // Convertir en ampères : voltage = raw * Vref / resolution
+    //                        current = voltage / 0.525
+    float voltAz = (float)motorFbRawAz * ADC_VREF / (float)ADC_RESOLUTION;
+    float voltEl = (float)motorFbRawEl * ADC_VREF / (float)ADC_RESOLUTION;
+    motorCurrentAz = voltAz / FB_VOLTS_PER_AMP;
+    motorCurrentEl = voltEl / FB_VOLTS_PER_AMP;
+
+    // Status flag (open-drain, LOW = fault)
+    motorSfFault = (digitalRead(PIN_MC_SF) == LOW);
+}
+
+bool motorReadSF() {
+    return (digitalRead(PIN_MC_SF) == LOW);
+}

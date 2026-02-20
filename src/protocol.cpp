@@ -1,13 +1,12 @@
+// ════════════════════════════════════════════════════════════════
+// EME ROTATOR CONTROLLER — Protocole EasyCom II (Implementation)
+// ════════════════════════════════════════════════════════════════
+// Format position : AZxxx.x ELxxx.x (1 décimale, extensible à 2)
+// Commandes : AZxxx.x ELyyy.y, AZ, EL, S, SA, SE, VE, MR/ML/MU/MD
+// ════════════════════════════════════════════════════════════════
+
 #include "protocol.h"
 #include "config.h"
-
-// Vérification qu'un seul protocole est défini
-#if defined(PROTOCOL_GS232) && defined(PROTOCOL_EASYCOM)
-  #error "Définir un seul protocole : PROTOCOL_GS232 ou PROTOCOL_EASYCOM"
-#endif
-#if !defined(PROTOCOL_GS232) && !defined(PROTOCOL_EASYCOM)
-  #error "Aucun protocole défini : activer PROTOCOL_GS232 ou PROTOCOL_EASYCOM dans config.h"
-#endif
 
 // ─────────────────────────────────────────────────
 // Fonctions utilitaires
@@ -29,134 +28,6 @@ static void toUpper(char *str) {
     }
 }
 
-// ─────────────────────────────────────────────────
-// Parser GS-232B
-// ─────────────────────────────────────────────────
-
-#ifdef PROTOCOL_GS232
-
-static ParsedCommand parseGS232(char *line) {
-    ParsedCommand result = { CMD_NONE, 0.0f, 0.0f };
-
-    trimLine(line);
-    toUpper(line);
-
-    int len = strlen(line);
-    if (len == 0) return result;
-
-    // C2 — Demande de position AZ + EL
-    if (strcmp(line, "C2") == 0) {
-        result.cmd = CMD_QUERY_POS;
-        return result;
-    }
-
-    // C — Demande de position AZ seul (GS-232A compat)
-    if (strcmp(line, "C") == 0) {
-        result.cmd = CMD_QUERY_POS;
-        return result;
-    }
-
-    // S — Arrêt tous moteurs
-    if (strcmp(line, "S") == 0) {
-        result.cmd = CMD_STOP_ALL;
-        return result;
-    }
-
-    // A — Arrêt azimut
-    if (strcmp(line, "A") == 0) {
-        result.cmd = CMD_STOP_AZ;
-        return result;
-    }
-
-    // E — Arrêt élévation
-    if (strcmp(line, "E") == 0) {
-        result.cmd = CMD_STOP_EL;
-        return result;
-    }
-
-    // R — Rotation continue CW
-    if (strcmp(line, "R") == 0) {
-        result.cmd = CMD_JOG_CW;
-        return result;
-    }
-
-    // L — Rotation continue CCW
-    if (strcmp(line, "L") == 0) {
-        result.cmd = CMD_JOG_CCW;
-        return result;
-    }
-
-    // U — Élévation continue UP
-    if (strcmp(line, "U") == 0) {
-        result.cmd = CMD_JOG_UP;
-        return result;
-    }
-
-    // D — Élévation continue DOWN
-    if (strcmp(line, "D") == 0) {
-        result.cmd = CMD_JOG_DOWN;
-        return result;
-    }
-
-    // Mxxx — Pointer azimut (3 chiffres)
-    if (line[0] == 'M' && len >= 4) {
-        float az = atof(&line[1]);
-        result.cmd = CMD_GOTO_AZ;
-        result.az = az;
-        return result;
-    }
-
-    // Wxxx yyy — Pointer AZ + EL
-    if (line[0] == 'W' && len >= 7) {
-        // Format : Wxxx yyy  ou  Wxxx.x yyy.y
-        char *space = strchr(&line[1], ' ');
-        if (space) {
-            *space = '\0';
-            result.az = atof(&line[1]);
-            result.el = atof(space + 1);
-            result.cmd = CMD_GOTO_AZEL;
-            return result;
-        }
-    }
-
-    result.cmd = CMD_UNKNOWN;
-    return result;
-}
-
-void protocolSendPosition(Stream &output, float az, float el) {
-    // Format GS-232B : +0xxx+0yyy\r\n
-    // AZ sur 3 chiffres entiers (000-450), EL sur 3 chiffres (000-180)
-    char buf[20];
-    snprintf(buf, sizeof(buf), "+0%03d+0%03d\r\n", (int)(az + 0.5f), (int)(el + 0.5f));
-    output.print(buf);
-}
-
-void protocolSendAzimuth(Stream &output, float az) {
-    // GS-232B n'a pas de requête AZ seule, envoyer la position complète
-    protocolSendPosition(output, az, 0.0f);
-}
-
-void protocolSendElevation(Stream &output, float el) {
-    // GS-232B n'a pas de requête EL seule, envoyer la position complète
-    protocolSendPosition(output, 0.0f, el);
-}
-
-void protocolSendVersion(Stream &output) {
-    output.print("GS-232B ON7KGK\r\n");
-}
-
-const char* protocolGetName() {
-    return "GS-232B";
-}
-
-#endif // PROTOCOL_GS232
-
-// ─────────────────────────────────────────────────
-// Parser EasyCom II
-// ─────────────────────────────────────────────────
-
-#ifdef PROTOCOL_EASYCOM
-
 // Extraire valeur numérique après un mot-clé (AZ, EL) dans la ligne
 // Retourne true si une valeur a été trouvée
 static bool extractValue(const char *line, const char *keyword, float &value) {
@@ -170,13 +41,18 @@ static bool extractValue(const char *line, const char *keyword, float &value) {
     while (*start == ' ') start++;
 
     // Vérifier qu'il y a un chiffre, signe ou point après le mot-clé
-    if (*start == '\0' || (*start != '-' && *start != '+' && *start != '.' && !(*start >= '0' && *start <= '9'))) {
+    if (*start == '\0' || (*start != '-' && *start != '+' && *start != '.'
+        && !(*start >= '0' && *start <= '9'))) {
         return false;  // Pas de valeur = query
     }
 
     value = atof(start);
     return true;
 }
+
+// ─────────────────────────────────────────────────
+// Parser EasyCom II
+// ─────────────────────────────────────────────────
 
 static ParsedCommand parseEasyCom(char *line) {
     ParsedCommand result = { CMD_NONE, 0.0f, 0.0f };
@@ -193,19 +69,16 @@ static ParsedCommand parseEasyCom(char *line) {
         return result;
     }
 
-    // ── Commandes STOP (priorité absolue, style K3NG) ──
-    // S, STOP, ; → stop all
+    // ── Commandes STOP (priorité absolue) ──
     if (strcmp(line, "S") == 0 || strcmp(line, "STOP") == 0 || strcmp(line, ";") == 0) {
         result.cmd = CMD_STOP_ALL;
         return result;
     }
-    // SA (seul ou suivi de SE), SE (seul ou suivi de SA)
-    if (strstr(line, "SA") || strstr(line, "SE")) {
-        // Vérifier que ce n'est pas un début de commande goto (ex: ligne contenant "AZ...SE...")
-        if (line[0] == 'S') {
-            result.cmd = CMD_STOP_ALL;
-            return result;
-        }
+
+    // SA, SE, SASE, SESA → stop
+    if (line[0] == 'S' && len >= 2 && (line[1] == 'A' || line[1] == 'E')) {
+        result.cmd = CMD_STOP_ALL;
+        return result;
     }
 
     // ── Query position : "AZ" ou "EL" seuls (sans valeur) ──
@@ -215,7 +88,7 @@ static ParsedCommand parseEasyCom(char *line) {
     }
 
     // ── Commandes GOTO : parser AZ et EL indépendamment ──
-    // PSTRotator peut envoyer "AZ123.5 EL45.0" sur une seule ligne
+    // PSTRotator envoie "AZ123.5 EL45.0" sur une seule ligne
     bool hasAz = false, hasEl = false;
     float azVal = 0.0f, elVal = 0.0f;
 
@@ -249,32 +122,20 @@ static ParsedCommand parseEasyCom(char *line) {
     return result;
 }
 
+// ─────────────────────────────────────────────────
+// Envoi de réponses EasyCom II
+// ─────────────────────────────────────────────────
+
 void protocolSendPosition(Stream &output, float az, float el) {
-    // Format EasyCom II : AZxxx.x ELxxx.x\r\n (1 décimale, comme SVH3/K3NG)
+    // Format EasyCom II : AZxxx.x ELxxx.x\r\n (1 décimale)
     char buf[30];
     snprintf(buf, sizeof(buf), "AZ%.1f EL%.1f\r\n", az, el);
     output.print(buf);
 }
 
-void protocolSendAzimuth(Stream &output, float az) {
-    // EasyCom : toujours répondre avec position combinée (pas utilisé)
-    protocolSendPosition(output, az, 0.0f);
-}
-
-void protocolSendElevation(Stream &output, float el) {
-    // EasyCom : toujours répondre avec position combinée (pas utilisé)
-    protocolSendPosition(output, 0.0f, el);
-}
-
 void protocolSendVersion(Stream &output) {
     output.print("VE002\r\n");  // EasyCom version 2
 }
-
-const char* protocolGetName() {
-    return "EasyCom II";
-}
-
-#endif // PROTOCOL_EASYCOM
 
 // ─────────────────────────────────────────────────
 // Fonctions communes
@@ -286,8 +147,7 @@ void protocolStateInit(ProtocolState &state) {
 }
 
 void protocolInit() {
-    DEBUG_PRINT("Protocole actif : ");
-    DEBUG_PRINTLN(protocolGetName());
+    DEBUG_PRINTLN("[INIT] Protocole : EasyCom II (1 décimale)");
 }
 
 bool protocolProcessStream(Stream &input, ProtocolState &state, ParsedCommand &result) {
@@ -304,12 +164,7 @@ bool protocolProcessStream(Stream &input, ProtocolState &state, ParsedCommand &r
             DEBUG_PRINT(state.buffer);
             DEBUG_PRINTLN("\"");
 
-            #ifdef PROTOCOL_GS232
-                result = parseGS232(state.buffer);
-            #endif
-            #ifdef PROTOCOL_EASYCOM
-                result = parseEasyCom(state.buffer);
-            #endif
+            result = parseEasyCom(state.buffer);
 
             // Reset du buffer pour la prochaine commande
             state.index = 0;
